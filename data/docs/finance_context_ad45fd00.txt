@@ -1,0 +1,32 @@
+This dataset belongs to the finance, sales, and business analytics domain.
+
+Primary business objective:
+- Understand financial performance and identify the major drivers of revenue, sales, discounts, costs, and profit.
+- Discover which products, countries, customer segments, and discount strategies most strongly influence business outcomes.
+- Evaluate whether the dataset is suitable for predictive analytics such as profit prediction, sales forecasting, or revenue optimization.
+
+Analytical goals:
+- Detect the most important target variable automatically, such as Profit, Sales, or Revenue, depending on the dataset structure.
+- Assess data quality issues including missing values, duplicates, outliers, and columns with weak analytical value.
+- Identify relationships between numerical business variables such as Sales, Gross Sales, Discounts, Cost of Goods Sold (COGS), Units Sold, and Profit.
+- Measure the impact of discounting on sales performance and profitability.
+- Compare performance across business dimensions such as Product, Country, Segment, Month, and Year.
+- Detect whether the dataset is more suitable for classification or regression tasks.
+- Evaluate feature importance for the detected target variable.
+- Recommend visualizations that explain business performance clearly and support decision-making.
+
+Expected analytical focus:
+- Revenue and profit drivers
+- Margin and discount behavior
+- Segment-wise and country-wise business performance
+- Product-level profitability patterns
+- Seasonal or time-based trends if date columns exist
+- Outlier detection for unusually high or low sales/profit observations
+- Model readiness for business forecasting or predictive analytics
+
+Interpretation rules:
+- Avoid overstating weak correlations.
+- Treat small correlations as weak unless statistically or practically meaningful.
+- Distinguish between revenue growth and profit growth, since high sales do not always imply high profitability.
+- Prefer evidence-based conclusions from computed metrics, feature importance, and chart outputs.
+- Avoid unsupported claims or business assumptions not grounded in the dataset.

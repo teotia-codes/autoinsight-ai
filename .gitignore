@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.vscode/
+.idea/
+data/uploads/*
+data/processed/*
+data/vectorstore/*
+!data/uploads/.gitkeep
+!data/processed/.gitkeep
+!data/vectorstore/.gitkeep

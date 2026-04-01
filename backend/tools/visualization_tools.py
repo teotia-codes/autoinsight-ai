@@ -1,0 +1,307 @@
+import matplotlib
+matplotlib.use("Agg")
+
+import os
+import uuid
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+# ============================================================
+# Config
+# ============================================================
+CHART_DIR = os.path.join("data", "processed", "charts")
+os.makedirs(CHART_DIR, exist_ok=True)
+
+
+# ============================================================
+# Helpers
+# ============================================================
+def _safe_read_csv(file_path: str) -> pd.DataFrame:
+    try:
+        return pd.read_csv(file_path)
+    except UnicodeDecodeError:
+        return pd.read_csv(file_path, encoding="latin1")
+
+
+def _safe_chart_path(prefix: str) -> str:
+    filename = f"{prefix}_{uuid.uuid4().hex[:8]}.png"
+    return os.path.join(CHART_DIR, filename)
+
+
+def _save_current_plot(path: str):
+    plt.tight_layout()
+    plt.savefig(path, bbox_inches="tight")
+    plt.close()
+
+
+def _get_numeric_columns(df: pd.DataFrame):
+    return df.select_dtypes(include=["number"]).columns.tolist()
+
+
+def _get_categorical_columns(df: pd.DataFrame):
+    return df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+
+
+def _get_continuous_numeric_columns(df: pd.DataFrame):
+    continuous = []
+    for col in _get_numeric_columns(df):
+        if df[col].nunique(dropna=True) > 10:
+            continuous.append(col)
+    return continuous
+
+
+# ============================================================
+# Chart Generators
+# ============================================================
+def create_histogram(df: pd.DataFrame, column: str):
+    if column not in df.columns:
+        return None
+
+    series = df[column].dropna()
+    if series.empty:
+        return None
+
+    path = _safe_chart_path(f"hist_{column}")
+
+    plt.figure(figsize=(8, 5))
+    plt.hist(series, bins=20)
+    plt.title(f"Distribution of {column}")
+    plt.xlabel(column)
+    plt.ylabel("Frequency")
+
+    _save_current_plot(path)
+
+    interpretation = (
+        f"This histogram shows the distribution of '{column}'. "
+        f"It helps assess central tendency, spread, skewness, and possible extreme values."
+    )
+
+    return {
+        "title": f"Histogram: {column}",
+        "chart_type": "histogram",
+        "columns": [column],
+        "path": path,
+        "interpretation": interpretation,
+    }
+
+
+def create_boxplot(df: pd.DataFrame, column: str):
+    if column not in df.columns:
+        return None
+
+    series = df[column].dropna()
+    if series.empty:
+        return None
+
+    path = _safe_chart_path(f"box_{column}")
+
+    plt.figure(figsize=(8, 5))
+    plt.boxplot(series, vert=True)
+    plt.title(f"Boxplot of {column}")
+    plt.ylabel(column)
+
+    _save_current_plot(path)
+
+    interpretation = (
+        f"This boxplot highlights the spread of '{column}' and potential outliers. "
+        f"Points beyond the whiskers may represent unusual or extreme observations worth validating."
+    )
+
+    return {
+        "title": f"Boxplot: {column}",
+        "chart_type": "boxplot",
+        "columns": [column],
+        "path": path,
+        "interpretation": interpretation,
+    }
+
+
+def create_bar_chart(df: pd.DataFrame, column: str, top_n: int = 10):
+    if column not in df.columns:
+        return None
+
+    counts = df[column].astype(str).value_counts().head(top_n)
+    if counts.empty:
+        return None
+
+    path = _safe_chart_path(f"bar_{column}")
+
+    plt.figure(figsize=(10, 5))
+    counts.plot(kind="bar")
+    plt.title(f"Top {top_n} Categories in {column}")
+    plt.xlabel(column)
+    plt.ylabel("Count")
+    plt.xticks(rotation=45, ha="right")
+
+    _save_current_plot(path)
+
+    interpretation = (
+        f"This bar chart shows the most frequent categories in '{column}'. "
+        f"It helps identify dominant categories, class imbalance, and concentration patterns."
+    )
+
+    return {
+        "title": f"Bar Chart: {column}",
+        "chart_type": "bar",
+        "columns": [column],
+        "path": path,
+        "interpretation": interpretation,
+    }
+
+
+def create_scatter_plot(df: pd.DataFrame, x_col: str, y_col: str):
+    if x_col not in df.columns or y_col not in df.columns:
+        return None
+
+    plot_df = df[[x_col, y_col]].dropna()
+    if plot_df.empty:
+        return None
+
+    path = _safe_chart_path(f"scatter_{x_col}_{y_col}")
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(plot_df[x_col], plot_df[y_col], alpha=0.6)
+    plt.title(f"{x_col} vs {y_col}")
+    plt.xlabel(x_col)
+    plt.ylabel(y_col)
+
+    _save_current_plot(path)
+
+    interpretation = (
+        f"This scatter plot compares '{x_col}' and '{y_col}'. "
+        f"It helps visually assess direction, clustering, possible association, and outliers."
+    )
+
+    return {
+        "title": f"Scatter Plot: {x_col} vs {y_col}",
+        "chart_type": "scatter",
+        "columns": [x_col, y_col],
+        "path": path,
+        "interpretation": interpretation,
+    }
+
+
+def create_correlation_heatmap(df: pd.DataFrame):
+    numeric_df = df.select_dtypes(include=["number"])
+    if numeric_df.shape[1] < 2:
+        return None
+
+    corr = numeric_df.corr()
+
+    path = _safe_chart_path("heatmap_corr")
+
+    plt.figure(figsize=(10, 8))
+    plt.imshow(corr, aspect="auto")
+    plt.colorbar()
+    plt.xticks(range(len(corr.columns)), corr.columns, rotation=90)
+    plt.yticks(range(len(corr.columns)), corr.columns)
+    plt.title("Correlation Heatmap")
+
+    _save_current_plot(path)
+
+    interpretation = (
+        "This correlation heatmap summarizes pairwise numeric relationships. "
+        "It helps identify stronger and weaker linear associations across numeric variables."
+    )
+
+    return {
+        "title": "Correlation Heatmap",
+        "chart_type": "heatmap",
+        "columns": corr.columns.tolist(),
+        "path": path,
+        "interpretation": interpretation,
+    }
+
+
+# ============================================================
+# Main Autonomous Visualization Engine
+# ============================================================
+def generate_recommended_visualizations(file_path: str, analysis_result: dict):
+    df = _safe_read_csv(file_path)
+    visualizations = []
+
+    numeric_cols = _get_numeric_columns(df)
+    continuous_numeric_cols = _get_continuous_numeric_columns(df)
+    categorical_cols = _get_categorical_columns(df)
+
+    # 1. Histogram for first continuous numeric column
+    hist_col = continuous_numeric_cols[0] if continuous_numeric_cols else (numeric_cols[0] if numeric_cols else None)
+    if hist_col:
+        hist_viz = create_histogram(df, hist_col)
+        if hist_viz:
+            visualizations.append(hist_viz)
+
+    # 2. Boxplot for numeric column with max outliers
+    outlier_counts = analysis_result.get("outlier_counts", {})
+    if outlier_counts:
+        sorted_outliers = sorted(outlier_counts.items(), key=lambda x: x[1], reverse=True)
+        if sorted_outliers and sorted_outliers[0][1] > 0:
+            box_col = sorted_outliers[0][0]
+        else:
+            box_col = hist_col
+    else:
+        box_col = hist_col
+
+    if box_col:
+        box_viz = create_boxplot(df, box_col)
+        if box_viz:
+            visualizations.append(box_viz)
+
+    # 3. Bar chart for first categorical column
+    first_cat_col = None
+    if categorical_cols:
+        first_cat_col = categorical_cols[0]
+        bar_viz = create_bar_chart(df, first_cat_col, top_n=10)
+        if bar_viz:
+            visualizations.append(bar_viz)
+
+    # 4. Scatter plot for strongest correlation pair
+    top_corrs = analysis_result.get("top_correlations", [])
+    if top_corrs:
+        top_pair = top_corrs[0]
+        x_col = top_pair.get("col1")
+        y_col = top_pair.get("col2")
+
+        if x_col and y_col:
+            scatter_viz = create_scatter_plot(df, x_col, y_col)
+            if scatter_viz:
+                visualizations.append(scatter_viz)
+
+    # 5. Correlation heatmap (only if enough numeric cols)
+    if len(numeric_cols) >= 3:
+        heatmap_viz = create_correlation_heatmap(df)
+        if heatmap_viz:
+            visualizations.append(heatmap_viz)
+
+    # 6. Target-aware visualization (avoid duplicates)
+    target_info = analysis_result.get("target_analysis", {})
+    target_col = target_info.get("target_column")
+
+    if target_col and target_col in df.columns:
+        already_used_as_single_col = any(
+            viz.get("columns") == [target_col] for viz in visualizations
+        )
+
+        if not already_used_as_single_col:
+            if target_col in numeric_cols:
+                target_hist = create_histogram(df, target_col)
+                if target_hist:
+                    target_hist["title"] = f"Target Distribution: {target_col}"
+                    target_hist["interpretation"] = (
+                        f"This chart shows the distribution of the detected target '{target_col}'. "
+                        f"It helps assess spread, skewness, and whether the target contains extreme values."
+                    )
+                    visualizations.append(target_hist)
+            else:
+                target_bar = create_bar_chart(df, target_col, top_n=10)
+                if target_bar:
+                    target_bar["title"] = f"Target Class Distribution: {target_col}"
+                    target_bar["interpretation"] = (
+                        f"This chart shows the class distribution for the detected target '{target_col}'. "
+                        f"It helps identify class imbalance, which is important for classification modeling."
+                    )
+                    visualizations.append(target_bar)
+
+    # Keep UI manageable
+    return visualizations[:6]
