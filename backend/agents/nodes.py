@@ -43,7 +43,7 @@ Your job:
    - correlations
    - outliers
    - KPIs
-   - feature importance
+   - signal ranking
    - ML readiness
    - visualizations
 4. Keep the plan concise, structured, and domain-aware.
@@ -80,11 +80,18 @@ def target_validation_node(state: AgentState) -> AgentState:
     target_col = target_info.get("target_column")
     task_type = target_info.get("task_type", "unknown")
     confidence = target_info.get("confidence", "low")
+    ambiguous = target_info.get("ambiguous", False)
+    alternate_targets = target_info.get("alternate_targets", [])
     note = target_info.get("note", "")
 
     lines.append(f"Selected Target Column: {target_col}")
     lines.append(f"Task Type: {task_type}")
     lines.append(f"Confidence: {confidence}")
+    lines.append(f"Ambiguous Target: {ambiguous}")
+
+    if alternate_targets:
+        lines.append(f"Alternate Targets: {alternate_targets}")
+
     lines.append(f"Selection Note: {note}")
     lines.append("")
 
@@ -132,27 +139,28 @@ def kpi_node(state: AgentState) -> AgentState:
 
 
 # ============================================================
-# 6. Feature Importance Node
+# 6. Signal Ranking Node
 # ============================================================
-def feature_importance_node(state: AgentState) -> AgentState:
-    fi = state.get("tool_analysis_result", {}).get("feature_importance", {})
+def signal_ranking_node(state: AgentState) -> AgentState:
+    sr = state.get("tool_analysis_result", {}).get("signal_ranking", {})
 
     lines = []
-    lines.append("FEATURE IMPORTANCE AGENT REPORT")
+    lines.append("SIGNAL RANKING AGENT REPORT")
     lines.append("=" * 50)
 
-    if fi.get("available", False):
-        lines.append(f"Target Used: {fi.get('target_column', None)}")
-        lines.append(f"Task Type: {fi.get('task_type', 'unknown')}")
-        lines.append("Top Predictors:")
+    if sr.get("available", False):
+        lines.append(f"Target Used: {sr.get('target_column', None)}")
+        lines.append(f"Task Type: {sr.get('task_type', 'unknown')}")
+        lines.append(f"Method: {sr.get('method', 'unknown')}")
+        lines.append("Top Signals:")
 
-        for feat in fi.get("top_features", []):
+        for feat in sr.get("top_signals", []):
             lines.append(f"- {feat['feature']}: {feat['importance']}")
     else:
-        lines.append(f"Feature importance unavailable: {fi.get('reason', 'Unknown reason')}")
+        lines.append(f"Signal ranking unavailable: {sr.get('reason', 'Unknown reason')}")
 
-    state["feature_importance_output"] = "\n".join(lines)
-    state["feature_importance_structured"] = fi
+    state["signal_ranking_output"] = "\n".join(lines)
+    state["signal_ranking_structured"] = sr
     return state
 
 
@@ -201,54 +209,61 @@ def ml_readiness_node(state: AgentState) -> AgentState:
 
 
 # ============================================================
-# 9. Verifier Node (Evidence-grounded)
+# 9. Verifier Node (UPDATED)
 # ============================================================
 def verifier_node(state: AgentState) -> AgentState:
     prompt = f"""
-You are the VERIFIER AGENT in an autonomous analytics system.
+You are a strict senior data analyst and QA reviewer.
 
-STRICT RULES:
-1. Do NOT exaggerate evidence.
-2. Do NOT call weak correlations "strong".
-3. Do NOT invent causal claims.
-4. Only use information explicitly present in the provided inputs.
-5. If evidence is weak, say it is weak / preliminary / requires validation.
-6. If target detection confidence is low, explicitly mention that.
-7. If feature importance is unavailable, mention that this limits confidence.
+Your job is to VERIFY the analytical correctness of the generated analysis.
+You must:
+1. Identify weak claims, overstatements, or unsupported conclusions.
+2. Check whether the selected target is ambiguous.
+3. Distinguish between exploratory signals and true model-based signal ranking.
+4. Highlight any suspicious visualization choices.
+5. Avoid repeating the entire report. Focus on critique, caveats, and validation notes only.
 
-Your task:
-- Check consistency across all analysis outputs
-- Identify unsupported or exaggerated claims
-- Identify risks or weak conclusions
-- Confirm what appears strongly supported
-- Mention where manual validation is recommended
+ANALYSIS PRIORITIES:
+{state.get("planner_output", "")}
 
-Planner Output:
-{state.get("planner_output", "N/A")}
-
-Tool-Based Analysis:
-{state.get("tool_analysis_text", "N/A")}
+STRUCTURED ANALYSIS EVIDENCE:
+Tool Analysis:
+{state.get("tool_analysis_text", "")}
 
 Target Validation:
-{state.get("target_validation_output", "N/A")}
+{state.get("target_validation_output", "")}
 
-Data Quality Report:
-{state.get("data_quality_output", "N/A")}
+Data Quality:
+{state.get("data_quality_output", "")}
 
-KPI Report:
-{state.get("kpi_output", "N/A")}
+KPI Summary:
+{state.get("kpi_output", "")}
 
-Feature Importance:
-{state.get("feature_importance_output", "N/A")}
+Signal Ranking:
+{state.get("signal_ranking_output", "")}
 
 Visualization Summary:
-{state.get("visualization_summary", "N/A")}
+{state.get("visualization_summary", "")}
 
-ML Readiness Report:
-{state.get("ml_readiness_output", "N/A")}
+ML Readiness:
+{state.get("ml_readiness_output", "")}
 
 Retrieved Business Context:
 {state.get("retrieved_context", "N/A")}
+
+Important rules:
+- If the target analysis says ambiguous=true, explicitly say the target should be manually confirmed.
+- If signals are derived from Random Forest, call them "model-based signal ranking".
+- Do NOT call signal ranking causal proof.
+- If any identifier-like or postal/zip/code-like columns are used in charts, flag them as weak chart choices.
+- Keep output concise and practical.
+
+Return:
+- Analysis Priorities
+- Validation Notes
+- Issues Found
+- Risks / Cautions
+- Recommendations
 
 Return a concise, evidence-grounded verification report in markdown.
 """
@@ -259,37 +274,24 @@ Return a concise, evidence-grounded verification report in markdown.
 
 
 # ============================================================
-# 10. Final Report Node (No-hallucination)
+# 10. Final Report Node (UPDATED)
 # ============================================================
 def final_report_node(state: AgentState) -> AgentState:
     prompt = f"""
-You are the FINAL REPORT AGENT for AutoInsight AI.
+You are a senior data analyst writing a polished executive analytics report.
 
-You must produce a polished, professional, executive-style final report.
+Create a FINAL REPORT using the evidence below.
 
-STRICT EVIDENCE RULES:
-1. Only use facts explicitly supported by the inputs below.
-2. Do NOT exaggerate weak evidence.
-3. If a correlation is weak, describe it as weak.
-4. Do NOT claim causation from correlation.
-5. If target detection confidence is low or medium, clearly mention manual validation is recommended.
-6. If feature importance is unavailable, state that predictive ranking is limited.
-7. If the dataset is not ML-ready, say so clearly.
-8. Be domain-aware, but do NOT invent domain-specific claims not supported by the data.
+IMPORTANT RULES:
+1. Be accurate and conservative. Do NOT exaggerate.
+2. If target selection is ambiguous, explicitly mention that the selected target is the default choice and manual confirmation is recommended.
+3. Use the term "Signal Ranking" instead of "Feature Importance".
+4. If ML readiness is not fully clean, say "Conditionally Ready" or "Requires preprocessing" instead of claiming the dataset is fully ready.
+5. Do NOT repeat the verification section verbatim.
+6. Keep the report executive, analytical, and grounded.
+7. Do NOT claim causality from correlations or model-based signal ranking.
 
-Required sections:
-1. Executive Summary
-2. Target Validation
-3. Key Data Quality Findings
-4. Key Statistical / Analytical Findings
-5. KPI Highlights
-6. Feature Importance Highlights
-7. Visualization Insights
-8. ML Readiness Assessment
-9. Risks / Cautions
-10. Actionable Recommendations
-
-Inputs:
+INPUTS:
 
 Planner Output:
 {state.get("planner_output", "N/A")}
@@ -306,8 +308,8 @@ Data Quality:
 KPI:
 {state.get("kpi_output", "N/A")}
 
-Feature Importance:
-{state.get("feature_importance_output", "N/A")}
+Signal Ranking:
+{state.get("signal_ranking_output", "N/A")}
 
 Visualization Summary:
 {state.get("visualization_summary", "N/A")}
@@ -321,7 +323,54 @@ Verifier:
 Retrieved Business Context:
 {state.get("retrieved_context", "N/A")}
 
-Write the report in markdown.
+Write the report in markdown with this exact structure:
+
+# Final Report
+
+## Executive Summary
+- concise business + analytical summary
+
+## Target Validation
+- selected target
+- task type
+- confidence
+- if ambiguous, mention alternate targets and recommend manual confirmation
+
+## Key Data Quality Findings
+- missingness
+- duplicates
+- outliers
+- identifier-like columns / leakage risks
+
+## Key Statistical / Analytical Findings
+- correlations
+- distribution / trends
+- important exploratory observations
+
+## KPI Highlights
+- include computed KPIs only if supported by evidence
+
+## Signal Ranking Highlights
+- summarize the top model-based signals
+- do NOT overclaim causality
+
+## Visualization Insights
+- summarize what the generated charts reveal
+- mention if any chart recommendations should be interpreted cautiously
+
+## ML Readiness Assessment
+- readiness label
+- preprocessing needs
+- baseline models
+
+## Risks / Cautions
+- explicit caveats
+
+## Actionable Recommendations
+- practical next steps
+
+## Conclusion
+- short, grounded conclusion
 """
 
     response = llm.invoke(prompt)

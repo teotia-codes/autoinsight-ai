@@ -1,0 +1,42 @@
+This dataset belongs to the logistics, supply chain, transportation, and e-commerce operations domain.
+
+Primary business objective:
+- Forecast truckload demand for e-commerce logistics operations in Chennai.
+- Understand shipment volume patterns, route demand, seasonal effects, and operational drivers influencing truckload requirements.
+- Support better fleet planning, load allocation, dispatch optimization, and capacity utilization.
+
+Analytical goals:
+- Identify the most meaningful target variable automatically, such as Truck Load, Load Volume, Shipment Count, Orders, Dispatch Volume, or Demand, depending on the dataset structure.
+- Detect whether the dataset is suitable for time-series forecasting, regression, or operational demand prediction.
+- Assess data quality issues including missing values, duplicates, outliers, weak columns, and inconsistent date/time fields.
+- Identify patterns across temporal dimensions such as Date, Day, Week, Month, Holiday, Season, and Peak vs Non-Peak periods.
+- Evaluate relationships between operational variables such as Orders, Shipments, Distance, Region, Capacity, Delivery Volume, Load Utilization, and Truck Load.
+- Compare performance across routes, zones, hubs, categories, customer segments, or delivery clusters if such columns exist.
+- Detect peak demand periods and operational bottlenecks affecting truckload demand.
+
+Expected analytical focus:
+- Truckload demand forecasting
+- Time-based trends and seasonality
+- Daily / weekly / monthly load variation
+- Route-wise or zone-wise demand concentration
+- Capacity utilization and fleet efficiency
+- Peak-day vs normal-day demand comparison
+- Operational drivers of truckload requirements
+- Forecasting readiness and regression suitability
+
+Interpretation rules:
+- Prefer operationally meaningful conclusions grounded in computed metrics and observed patterns.
+- Avoid overstating weak correlations.
+- Treat time-based patterns, seasonality, and demand spikes as important forecasting signals.
+- Distinguish between shipment volume and truckload requirement, since higher order counts may not always translate proportionally into higher truckload demand.
+- Avoid unsupported assumptions about logistics operations unless directly supported by the dataset.
+
+Target detection guidance:
+- Prioritize columns with forecasting or demand significance such as Truck Load, Forecasted Load, Required Trucks, Shipment Volume, Dispatch Count, Orders, or similar operational demand indicators.
+- Do not select ID columns, route codes, transaction IDs, or constant administrative columns as target variables.
+- If date columns are present, treat them as key forecasting features rather than targets.
+
+Modeling expectations:
+- If the target is continuous (e.g., truck load, shipment volume, demand), prefer regression or time-series forecasting readiness.
+- If the target is categorical (e.g., peak day vs non-peak day, high-load vs low-load), treat it as a classification problem.
+- Highlight lag-based, trend-based, and seasonal signals if date/time features are available.

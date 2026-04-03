@@ -6,7 +6,7 @@ from backend.agents.nodes import (
     target_validation_node,
     data_quality_node,
     kpi_node,
-    feature_importance_node,
+    signal_ranking_node,
     visualization_tool_node,
     ml_readiness_node,
     verifier_node,
@@ -23,7 +23,7 @@ def build_agent_graph():
     workflow.add_node("target_validation", target_validation_node)
     workflow.add_node("data_quality", data_quality_node)
     workflow.add_node("kpi", kpi_node)
-    workflow.add_node("feature_importance", feature_importance_node)
+    workflow.add_node("signal_ranking", signal_ranking_node)
     workflow.add_node("visualization_tool", visualization_tool_node)
     workflow.add_node("ml_readiness", ml_readiness_node)
     workflow.add_node("verifier", verifier_node)
@@ -32,13 +32,13 @@ def build_agent_graph():
     # Entry point
     workflow.set_entry_point("planner")
 
-    # Phase 5 domain-agnostic flow
+    # Domain-agnostic analysis flow
     workflow.add_edge("planner", "tool_analysis")
     workflow.add_edge("tool_analysis", "target_validation")
     workflow.add_edge("target_validation", "data_quality")
     workflow.add_edge("data_quality", "kpi")
-    workflow.add_edge("kpi", "feature_importance")
-    workflow.add_edge("feature_importance", "visualization_tool")
+    workflow.add_edge("kpi", "signal_ranking")
+    workflow.add_edge("signal_ranking", "visualization_tool")
     workflow.add_edge("visualization_tool", "ml_readiness")
     workflow.add_edge("ml_readiness", "verifier")
     workflow.add_edge("verifier", "final_report")

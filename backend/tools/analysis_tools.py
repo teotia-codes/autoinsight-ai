@@ -36,10 +36,9 @@ def clean_string_value(val):
     if s.lower() in MISSING_TOKENS:
         return np.nan
 
-    # Normalize whitespace
     s = re.sub(r"\s+", " ", s).strip()
 
-    # Handle weird accounting negative formats like (1234)
+    # Accounting negative format like (1234)
     if re.fullmatch(r"\(\s*.*\s*\)", s):
         inner = s[1:-1].strip()
         s = f"-{inner}"
@@ -52,13 +51,11 @@ def try_parse_numeric_like_series(series: pd.Series) -> pd.Series:
     Try to convert object series to numeric if enough values look numeric.
     Handles:
     - commas
-    - currency symbols ($, ₹, €, £)
+    - currency symbols ($, ₹, €, £, ¥)
     - percentages (45%)
-    - accounting negatives (already normalized as -123)
+    - accounting negatives
     """
     cleaned = series.copy()
-
-    # Convert all values to cleaned strings / NaN
     cleaned = cleaned.apply(clean_string_value)
 
     def parse_one(x):
@@ -66,22 +63,14 @@ def try_parse_numeric_like_series(series: pd.Series) -> pd.Series:
             return np.nan
 
         s = str(x).strip()
-
-        # Remove currency symbols and commas
         s = s.replace(",", "")
         s = re.sub(r"[$₹€£¥]", "", s)
-
-        # Handle percentages as numeric percentage values (e.g., 45% -> 45)
         s = s.replace("%", "")
-
-        # Remove stray spaces again
         s = s.strip()
 
-        # If empty after cleaning => NaN
         if s == "":
             return np.nan
 
-        # Must contain at least one digit to be numeric-like
         if not re.search(r"\d", s):
             return np.nan
 
@@ -92,7 +81,6 @@ def try_parse_numeric_like_series(series: pd.Series) -> pd.Series:
 
     parsed = cleaned.apply(parse_one)
 
-    # Convert only if enough non-null values successfully parsed
     original_non_null = cleaned.notna().sum()
     parsed_non_null = parsed.notna().sum()
 
@@ -101,7 +89,6 @@ def try_parse_numeric_like_series(series: pd.Series) -> pd.Series:
 
     success_ratio = parsed_non_null / original_non_null
 
-    # Only convert if at least 70% of non-null values are numeric-like
     if success_ratio >= 0.70:
         return parsed
 
@@ -115,7 +102,6 @@ def try_parse_dates(df: pd.DataFrame) -> pd.DataFrame:
         if df[col].dtype == "object" and is_date_like_column_name(col):
             try:
                 converted = pd.to_datetime(df[col], errors="coerce")
-                # Convert only if enough values parsed
                 success_ratio = converted.notna().sum() / max(df[col].notna().sum(), 1)
                 if success_ratio >= 0.60:
                     df[col] = converted
@@ -134,13 +120,9 @@ def smart_preprocess_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # 2. Clean object values + try numeric conversion
     for col in df.columns:
         if df[col].dtype == "object":
-            # First clean strings / missing placeholders
             df[col] = df[col].apply(clean_string_value)
-
-            # Then try numeric conversion if appropriate
             converted = try_parse_numeric_like_series(df[col])
 
-            # Replace only if conversion happened
             if pd.api.types.is_numeric_dtype(converted):
                 df[col] = converted
 
@@ -164,13 +146,47 @@ def safe_read_csv(file_path: str) -> pd.DataFrame:
 
 
 # ============================================================
-# Column Type Helpers
+# Domain Guess
+# ============================================================
+def guess_domain(columns: List[str]) -> str:
+    cols = " ".join([c.lower() for c in columns])
+
+    healthcare_keywords = [
+        "glucose", "insulin", "bmi", "blood pressure", "bp", "hba1c",
+        "creatinine", "gfr", "egfr", "bun", "acr", "protein", "urine",
+        "diagnosis", "disease", "patient", "cholesterol", "symptom"
+    ]
+    finance_keywords = [
+        "revenue", "sales", "profit", "loss", "customer", "invoice",
+        "order", "discount", "cogs"
+    ]
+    hr_keywords = [
+        "employee", "salary", "department", "attrition",
+        "performance", "overtime", "job"
+    ]
+    retail_keywords = [
+        "product", "price", "category", "quantity",
+        "store", "segment", "units sold"
+    ]
+
+    if any(k in cols for k in healthcare_keywords):
+        return "healthcare"
+    if any(k in cols for k in finance_keywords):
+        return "finance/sales"
+    if any(k in cols for k in hr_keywords):
+        return "hr"
+    if any(k in cols for k in retail_keywords):
+        return "retail/ecommerce"
+
+    return "generic tabular"
+
+
+# ============================================================
+# Column Type Helpers (FIXED)
 # ============================================================
 def classify_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
-    # Exclude datetime from numeric
     numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
     datetime_cols = df.select_dtypes(include=["datetime", "datetimetz"]).columns.tolist()
-
     object_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
 
     constant_cols = []
@@ -180,33 +196,53 @@ def classify_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
     categorical_cols = []
     id_like_cols = []
 
+    rows = max(len(df), 1)
+
+    def is_id_like(col_name: str, series: pd.Series) -> bool:
+        col_lower = col_name.lower().strip()
+        nunique = series.nunique(dropna=True)
+        unique_ratio = nunique / rows
+
+        # Strong semantic ID / code-like indicators (GENERAL, not dataset-specific)
+        id_keywords = [
+            "id", "empid", "employeeid", "employeenumber",
+            "customerid", "orderid", "transactionid", "invoiceid",
+            "recordid", "uuid", "serial",
+            "postal", "postalcode", "zip", "zipcode", "pin", "pincode",
+            "code"
+        ]
+
+        if any(k == col_lower or k in col_lower for k in id_keywords):
+            if not any(k in col_lower for k in [
+                "sales", "profit", "revenue", "income", "price", "amount",
+                "score", "target", "label", "class", "outcome", "diagnosis", "attrition"
+            ]):
+                return True
+
+        # Very high-cardinality columns are often IDs
+        if unique_ratio > 0.95 and nunique > 20:
+            if not any(k in col_lower for k in [
+                "sales", "profit", "revenue", "income", "price", "amount",
+                "score", "target", "label", "class", "outcome", "diagnosis", "attrition"
+            ]):
+                return True
+
+        return False
+
     for col in df.columns:
         nunique = df[col].nunique(dropna=True)
-        col_lower = col.lower()
 
-        # Constant columns
         if nunique <= 1:
             constant_cols.append(col)
             continue
 
-        # ID-like columns
-        if (
-            "id" in col_lower
-            or "record" in col_lower
-            or "doctor" in col_lower
-            or "physician" in col_lower
-            or "name" in col_lower
-            or "charge" in col_lower
-            or "timestamp" in col_lower
-        ):
-            id_like_cols.append(col)
-            continue
-
-        # Datetime columns
         if col in datetime_cols:
             continue
 
-        # Numeric columns
+        if is_id_like(col, df[col]):
+            id_like_cols.append(col)
+            continue
+
         if col in numeric_cols:
             if nunique == 2:
                 binary_cols.append(col)
@@ -215,7 +251,6 @@ def classify_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
             else:
                 continuous_numeric.append(col)
 
-        # Object / category / bool columns
         elif col in object_cols:
             if nunique == 2:
                 binary_cols.append(col)
@@ -236,34 +271,7 @@ def classify_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
 
 
 # ============================================================
-# Domain Guess
-# ============================================================
-def guess_domain(columns: List[str]) -> str:
-    cols = " ".join([c.lower() for c in columns])
-
-    healthcare_keywords = [
-        "glucose", "insulin", "bmi", "blood pressure", "bp", "hba1c",
-        "creatinine", "gfr", "egfr", "bun", "acr", "protein", "urine",
-        "diagnosis", "disease", "patient", "cholesterol", "symptom"
-    ]
-    finance_keywords = ["revenue", "sales", "profit", "loss", "customer", "invoice", "order", "discount", "cogs"]
-    hr_keywords = ["employee", "salary", "department", "attrition", "performance", "overtime", "job"]
-    retail_keywords = ["product", "price", "category", "quantity", "store", "segment", "units sold"]
-
-    if any(k in cols for k in healthcare_keywords):
-        return "healthcare"
-    if any(k in cols for k in finance_keywords):
-        return "finance/sales"
-    if any(k in cols for k in hr_keywords):
-        return "hr"
-    if any(k in cols for k in retail_keywords):
-        return "retail/ecommerce"
-
-    return "generic tabular"
-
-
-# ============================================================
-# Better Target Detection
+# Better Target Detection (AMBIGUITY FIXED)
 # ============================================================
 def detect_target_column(df: pd.DataFrame, column_info: Dict[str, List[str]], domain: str) -> Dict[str, Any]:
     columns = df.columns.tolist()
@@ -271,12 +279,13 @@ def detect_target_column(df: pd.DataFrame, column_info: Dict[str, List[str]], do
     preferred_keywords = [
         "diagnosis", "outcome", "target", "label", "class",
         "risk", "stage", "disease", "condition", "status",
-        "attrition", "churn", "default", "fraud", "sales", "profit", "revenue"
+        "attrition", "churn", "default", "fraud",
+        "sales", "profit", "revenue", "demand", "forecast", "quantity"
     ]
 
     admin_keywords = [
-        "id", "record", "doctor", "physician", "name",
-        "timestamp", "charge", "hospital", "clinic"
+        "record", "doctor", "physician", "timestamp",
+        "charge", "hospital", "clinic"
     ]
 
     constant_cols = set(column_info["constant_cols"])
@@ -284,20 +293,19 @@ def detect_target_column(df: pd.DataFrame, column_info: Dict[str, List[str]], do
     datetime_cols = set(column_info.get("datetime_cols", []))
 
     candidates = []
+    rows = max(len(df), 1)
 
     for col in columns:
         col_lower = col.lower()
         nunique = df[col].nunique(dropna=True)
+        unique_ratio = nunique / rows
 
-        # Reject constant
         if col in constant_cols:
             continue
 
-        # Reject admin/id-like
         if col in id_like_cols:
             continue
 
-        # Reject datetime columns as targets by default
         if col in datetime_cols:
             continue
 
@@ -321,22 +329,27 @@ def detect_target_column(df: pd.DataFrame, column_info: Dict[str, List[str]], do
             score += 3
             reasons.append("low_cardinality")
         elif nunique > 10 and pd.api.types.is_numeric_dtype(df[col]):
-            score += 2
+            score += 4
             reasons.append("numeric_regression_candidate")
 
-        # Domain-specific preference
+        # Penalize almost unique columns
+        if unique_ratio > 0.95:
+            score -= 8
+            reasons.append("high_uniqueness_penalty")
+
+        # Domain-specific boost
         if domain == "healthcare":
-            if "diagnosis" in col_lower or "disease" in col_lower or "outcome" in col_lower:
+            if any(k in col_lower for k in ["diagnosis", "disease", "outcome", "risk"]):
                 score += 8
                 reasons.append("healthcare_semantic_boost")
 
         if domain in ["finance/sales", "retail/ecommerce"]:
-            if "profit" in col_lower or "sales" in col_lower or "revenue" in col_lower:
+            if any(k in col_lower for k in ["profit", "sales", "revenue", "demand", "quantity"]):
                 score += 6
                 reasons.append("business_target_boost")
 
         if domain == "hr":
-            if "attrition" in col_lower or "performance" in col_lower:
+            if any(k in col_lower for k in ["attrition", "performance", "salary", "income"]):
                 score += 6
                 reasons.append("hr_target_boost")
 
@@ -357,12 +370,24 @@ def detect_target_column(df: pd.DataFrame, column_info: Dict[str, List[str]], do
             "task_type": "unknown",
             "confidence": "low",
             "candidates": [],
+            "ambiguous": False,
+            "alternate_targets": [],
             "note": "No reliable target detected."
         }
 
     best = candidates[0]
     best_col = best["column"]
+    best_score = best["score"]
     nunique = best["nunique"]
+
+    # Ambiguity detection
+    ambiguous = False
+    alternate_targets = []
+    if len(candidates) > 1:
+        second = candidates[1]
+        if abs(best_score - second["score"]) <= 2:
+            ambiguous = True
+            alternate_targets.append(second["column"])
 
     if nunique == 2 or nunique <= 10:
         task_type = "classification"
@@ -371,14 +396,25 @@ def detect_target_column(df: pd.DataFrame, column_info: Dict[str, List[str]], do
     else:
         task_type = "classification"
 
-    confidence = "high" if best["score"] >= 15 else "medium" if best["score"] >= 8 else "low"
+    if best_score >= 15 and not ambiguous:
+        confidence = "high"
+    elif best_score >= 8:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    note = "Selected based on semantic relevance + cardinality + domain-aware rules."
+    if ambiguous:
+        note += " Multiple plausible targets detected; manual confirmation recommended."
 
     return {
         "target_column": best_col,
         "task_type": task_type,
         "confidence": confidence,
         "candidates": candidates[:5],
-        "note": "Selected based on semantic relevance + cardinality + domain-aware rules."
+        "ambiguous": ambiguous,
+        "alternate_targets": alternate_targets,
+        "note": note
     }
 
 
@@ -399,8 +435,7 @@ def detect_outliers_iqr(df: pd.DataFrame, continuous_numeric_cols: List[str]) ->
 
     for col in continuous_numeric_cols:
         series = df[col].dropna()
-        if series.empty:
-            outlier_counts[col] = 0
+        if len(series) < 5:
             continue
 
         q1 = series.quantile(0.25)
@@ -408,14 +443,14 @@ def detect_outliers_iqr(df: pd.DataFrame, continuous_numeric_cols: List[str]) ->
         iqr = q3 - q1
 
         if iqr == 0:
-            outlier_counts[col] = 0
             continue
 
         lower = q1 - 1.5 * iqr
         upper = q3 + 1.5 * iqr
 
         count = ((series < lower) | (series > upper)).sum()
-        outlier_counts[col] = int(count)
+        if count > 0:
+            outlier_counts[col] = int(count)
 
     return outlier_counts
 
@@ -437,11 +472,19 @@ def interpret_correlation_strength(r: float) -> str:
         return "very strong"
 
 
-def get_top_correlations(df: pd.DataFrame, top_n: int = 5) -> List[Dict[str, Any]]:
-    numeric_df = df.select_dtypes(include=["number"])
-    if numeric_df.shape[1] < 2:
+def get_top_correlations(df: pd.DataFrame, column_info: Dict[str, List[str]], top_n: int = 8) -> List[Dict[str, Any]]:
+    id_like_cols = set(column_info.get("id_like_cols", []))
+    constant_cols = set(column_info.get("constant_cols", []))
+
+    numeric_cols = [
+        c for c in df.select_dtypes(include=["number"]).columns.tolist()
+        if c not in id_like_cols and c not in constant_cols
+    ]
+
+    if len(numeric_cols) < 2:
         return []
 
+    numeric_df = df[numeric_cols]
     corr_matrix = numeric_df.corr()
     pairs = []
 
@@ -467,9 +510,9 @@ def get_top_correlations(df: pd.DataFrame, top_n: int = 5) -> List[Dict[str, Any
 
 
 # ============================================================
-# Feature Importance Engine
+# Signal Ranking Engine (RENAMED from Feature Importance)
 # ============================================================
-def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) -> Dict[str, Any]:
+def compute_signal_ranking(df: pd.DataFrame, target_info: Dict[str, Any], column_info: Dict[str, List[str]]) -> Dict[str, Any]:
     target_col = target_info.get("target_column")
     task_type = target_info.get("task_type", "unknown")
 
@@ -479,19 +522,17 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
             "reason": "No valid target column detected.",
             "target_column": None,
             "task_type": "unknown",
-            "top_features": []
+            "top_signals": []
         }
 
     work_df = df.copy()
 
-    # Drop constant columns
-    drop_cols = []
-    for col in work_df.columns:
-        if work_df[col].nunique(dropna=True) <= 1:
-            drop_cols.append(col)
+    # Drop constants + ID-like
+    drop_cols = set(column_info.get("constant_cols", []) + column_info.get("id_like_cols", []))
+    drop_cols.discard(target_col)
 
     if drop_cols:
-        work_df = work_df.drop(columns=drop_cols, errors="ignore")
+        work_df = work_df.drop(columns=list(drop_cols), errors="ignore")
 
     if target_col not in work_df.columns:
         return {
@@ -499,15 +540,14 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
             "reason": "Target removed because it became invalid after preprocessing.",
             "target_column": None,
             "task_type": "unknown",
-            "top_features": []
+            "top_signals": []
         }
 
-    # Convert datetime columns to ordinal numbers for modeling
+    # Convert datetime columns to ordinal numbers
     for col in work_df.columns:
         if pd.api.types.is_datetime64_any_dtype(work_df[col]):
             work_df[col] = work_df[col].map(lambda x: x.toordinal() if pd.notna(x) else np.nan)
 
-    # Build X, y
     y = work_df[target_col]
     X = work_df.drop(columns=[target_col])
 
@@ -517,10 +557,10 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
             "reason": "No features left after excluding target.",
             "target_column": target_col,
             "task_type": task_type,
-            "top_features": []
+            "top_signals": []
         }
 
-    # Encode categoricals
+    # Encode X
     for col in X.columns:
         if pd.api.types.is_numeric_dtype(X[col]):
             if X[col].isna().all():
@@ -532,7 +572,7 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
             le = LabelEncoder()
             X[col] = le.fit_transform(X[col])
 
-    # Encode y if needed
+    # Encode y
     if task_type == "classification":
         y = y.astype(str).fillna("MISSING")
         y_le = LabelEncoder()
@@ -543,6 +583,7 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
             random_state=42,
             n_jobs=-1
         )
+
     elif task_type == "regression":
         if not pd.api.types.is_numeric_dtype(y):
             return {
@@ -550,7 +591,7 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
                 "reason": "Regression target is non-numeric.",
                 "target_column": target_col,
                 "task_type": task_type,
-                "top_features": []
+                "top_signals": []
             }
 
         if y.isna().all():
@@ -559,7 +600,7 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
                 "reason": "Regression target contains only missing values.",
                 "target_column": target_col,
                 "task_type": task_type,
-                "top_features": []
+                "top_signals": []
             }
 
         y = y.fillna(y.median())
@@ -569,13 +610,14 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
             random_state=42,
             n_jobs=-1
         )
+
     else:
         return {
             "available": False,
             "reason": "Unknown task type.",
             "target_column": target_col,
             "task_type": task_type,
-            "top_features": []
+            "top_signals": []
         }
 
     try:
@@ -587,76 +629,30 @@ def compute_feature_importance(df: pd.DataFrame, target_info: Dict[str, Any]) ->
             "importance": importances
         }).sort_values("importance", ascending=False)
 
-        top_features = []
+        top_signals = []
         for _, row in feat_df.head(10).iterrows():
-            top_features.append({
+            top_signals.append({
                 "feature": str(row["feature"]),
                 "importance": round(float(row["importance"]), 4)
             })
 
         return {
             "available": True,
-            "reason": "Feature importance computed successfully.",
+            "reason": "Model-based signal ranking computed successfully.",
             "target_column": target_col,
             "task_type": task_type,
-            "top_features": top_features
+            "method": "random_forest_feature_importance",
+            "top_signals": top_signals
         }
 
     except Exception as e:
         return {
             "available": False,
-            "reason": f"Feature importance failed: {str(e)}",
+            "reason": f"Signal ranking failed: {str(e)}",
             "target_column": target_col,
             "task_type": task_type,
-            "top_features": []
+            "top_signals": []
         }
-
-
-# ============================================================
-# Clinical Rules Engine (Optional healthcare support)
-# ============================================================
-def evaluate_healthcare_rules(df: pd.DataFrame) -> Dict[str, Any]:
-    findings = []
-    risk_signals = []
-
-    col_map = {c.lower(): c for c in df.columns}
-
-    def get_col_contains(keyword_list):
-        for k in keyword_list:
-            for col_lower, original in col_map.items():
-                if k in col_lower:
-                    return original
-        return None
-
-    # Creatinine
-    creat_col = get_col_contains(["creatinine"])
-    if creat_col and pd.api.types.is_numeric_dtype(df[creat_col]):
-        mean_val = df[creat_col].dropna().mean()
-        findings.append(f"Average {creat_col}: {round(float(mean_val), 3)}")
-        if mean_val > 1.2:
-            risk_signals.append(f"Elevated average {creat_col} may indicate renal stress or kidney dysfunction risk.")
-
-    # GFR / eGFR
-    gfr_col = get_col_contains(["gfr", "egfr"])
-    if gfr_col and pd.api.types.is_numeric_dtype(df[gfr_col]):
-        mean_val = df[gfr_col].dropna().mean()
-        findings.append(f"Average {gfr_col}: {round(float(mean_val), 3)}")
-        if mean_val < 90:
-            risk_signals.append(f"Reduced average {gfr_col} may indicate impaired kidney filtration.")
-
-    # HbA1c
-    hba1c_col = get_col_contains(["hba1c"])
-    if hba1c_col and pd.api.types.is_numeric_dtype(df[hba1c_col]):
-        mean_val = df[hba1c_col].dropna().mean()
-        findings.append(f"Average {hba1c_col}: {round(float(mean_val), 3)}")
-        if mean_val >= 5.7:
-            risk_signals.append(f"Elevated average {hba1c_col} suggests glycemic dysregulation and possible diabetes-related risk.")
-
-    return {
-        "findings": findings,
-        "risk_signals": risk_signals,
-        "caution": "Clinical rules are supportive analytical heuristics only and must not be interpreted as diagnosis."
-    }
 
 
 # ============================================================
@@ -670,12 +666,8 @@ def run_real_data_analysis(file_path: str) -> Dict[str, Any]:
     target_analysis = detect_target_column(df, column_info, domain)
     high_missing_columns = get_high_missing_columns(df, threshold=20.0)
     outlier_counts = detect_outliers_iqr(df, column_info["continuous_numeric"])
-    top_correlations = get_top_correlations(df, top_n=8)
-    feature_importance = compute_feature_importance(df, target_analysis)
-
-    clinical_rules = {}
-    if domain == "healthcare":
-        clinical_rules = evaluate_healthcare_rules(df)
+    top_correlations = get_top_correlations(df, column_info, top_n=8)
+    signal_ranking = compute_signal_ranking(df, target_analysis, column_info)
 
     return {
         "shape": {"rows": int(df.shape[0]), "columns": int(df.shape[1])},
@@ -690,8 +682,7 @@ def run_real_data_analysis(file_path: str) -> Dict[str, Any]:
         "top_correlations": top_correlations,
 
         "target_analysis": target_analysis,
-        "feature_importance": feature_importance,
-        "clinical_rules": clinical_rules,
+        "signal_ranking": signal_ranking,
     }
 
 
@@ -762,6 +753,10 @@ def build_tool_analysis_text(analysis: Dict[str, Any]) -> str:
     lines.append(f"- Target Column: {target.get('target_column', None)}")
     lines.append(f"- Task Type: {target.get('task_type', 'unknown')}")
     lines.append(f"- Confidence: {target.get('confidence', 'low')}")
+    lines.append(f"- Ambiguous: {target.get('ambiguous', False)}")
+    alt_targets = target.get("alternate_targets", [])
+    if alt_targets:
+        lines.append(f"- Alternate Targets: {alt_targets}")
     lines.append(f"- Note: {target.get('note', '')}")
 
     candidates = target.get("candidates", [])
@@ -771,38 +766,19 @@ def build_tool_analysis_text(analysis: Dict[str, Any]) -> str:
             lines.append(f"  • {c['column']} (score={c['score']}, reasons={', '.join(c['reasons'])})")
     lines.append("")
 
-    # Feature importance
-    fi = analysis.get("feature_importance", {})
-    lines.append("FEATURE IMPORTANCE")
-    if fi.get("available"):
-        lines.append(f"- Target Used: {fi.get('target_column')}")
-        lines.append(f"- Task Type: {fi.get('task_type')}")
-        lines.append("- Top Predictors:")
-        for feat in fi.get("top_features", []):
+    # Signal ranking
+    sr = analysis.get("signal_ranking", {})
+    lines.append("SIGNAL RANKING")
+    if sr.get("available"):
+        lines.append(f"- Target Used: {sr.get('target_column')}")
+        lines.append(f"- Task Type: {sr.get('task_type')}")
+        lines.append(f"- Method: {sr.get('method', 'unknown')}")
+        lines.append("- Top Signals:")
+        for feat in sr.get("top_signals", []):
             lines.append(f"  • {feat['feature']}: {feat['importance']}")
     else:
-        lines.append(f"- Not available: {fi.get('reason', 'Unknown reason')}")
+        lines.append(f"- Not available: {sr.get('reason', 'Unknown reason')}")
     lines.append("")
-
-    # Optional healthcare rules
-    clinical = analysis.get("clinical_rules", {})
-    if clinical:
-        lines.append("OPTIONAL HEALTHCARE RULES")
-        findings = clinical.get("findings", [])
-        risks = clinical.get("risk_signals", [])
-
-        if findings:
-            lines.append("- Findings:")
-            for f in findings:
-                lines.append(f"  • {f}")
-
-        if risks:
-            lines.append("- Risk Signals:")
-            for r in risks:
-                lines.append(f"  • {r}")
-
-        lines.append(f"- Caution: {clinical.get('caution', '')}")
-        lines.append("")
 
     return "\n".join(lines)
 
@@ -903,6 +879,20 @@ def build_kpi_report(file_path: str, analysis: Dict[str, Any]) -> Dict[str, Any]
 
     metrics = {}
 
+    def add_generic_numeric_kpis():
+        numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+        column_info = analysis.get("column_types", {})
+        id_like_cols = set(column_info.get("id_like_cols", []))
+        constant_cols = set(column_info.get("constant_cols", []))
+
+        usable_numeric = [
+            c for c in numeric_cols
+            if c not in id_like_cols and c not in constant_cols
+        ]
+
+        for col in usable_numeric[:3]:
+            metrics[f"avg_{col.lower().replace(' ', '_')}"] = round(float(df[col].dropna().mean()), 2)
+
     if domain == "healthcare":
         for col in df.columns:
             col_lower = col.lower()
@@ -922,20 +912,37 @@ def build_kpi_report(file_path: str, analysis: Dict[str, Any]) -> Dict[str, Any]
             elif ("diagnosis" in col_lower or "outcome" in col_lower or "disease" in col_lower):
                 metrics["class_distribution"] = df[col].astype(str).value_counts().to_dict()
 
+        if not metrics:
+            add_generic_numeric_kpis()
+
     elif domain in ["finance/sales", "retail/ecommerce"]:
+        total_sales = None
+        total_profit = None
+
         for col in df.columns:
             col_lower = col.lower()
 
-            if "sales" == col_lower or "sales" in col_lower:
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    metrics[f"total_{col.lower().replace(' ', '_')}"] = round(float(df[col].sum()), 2)
+            if "sales" in col_lower and pd.api.types.is_numeric_dtype(df[col]):
+                total_sales = float(df[col].sum())
+                metrics[f"total_{col.lower().replace(' ', '_')}"] = round(total_sales, 2)
+                metrics[f"avg_{col.lower().replace(' ', '_')}"] = round(float(df[col].mean()), 2)
 
             elif "profit" in col_lower and pd.api.types.is_numeric_dtype(df[col]):
-                metrics[f"total_{col.lower().replace(' ', '_')}"] = round(float(df[col].sum()), 2)
+                total_profit = float(df[col].sum())
+                metrics[f"total_{col.lower().replace(' ', '_')}"] = round(total_profit, 2)
                 metrics[f"avg_{col.lower().replace(' ', '_')}"] = round(float(df[col].mean()), 2)
+
+            elif "revenue" in col_lower and pd.api.types.is_numeric_dtype(df[col]):
+                metrics[f"total_{col.lower().replace(' ', '_')}"] = round(float(df[col].sum()), 2)
 
             elif "units sold" in col_lower and pd.api.types.is_numeric_dtype(df[col]):
                 metrics["total_units_sold"] = round(float(df[col].sum()), 2)
+
+        if total_sales and total_profit:
+            metrics["avg_profit_margin_pct"] = round((total_profit / total_sales) * 100, 2)
+
+        if not metrics:
+            add_generic_numeric_kpis()
 
     elif domain == "hr":
         for col in df.columns:
@@ -944,12 +951,22 @@ def build_kpi_report(file_path: str, analysis: Dict[str, Any]) -> Dict[str, Any]
             if "attrition" in col_lower:
                 metrics["attrition_distribution"] = df[col].astype(str).value_counts().to_dict()
 
-            elif "salary" in col_lower and pd.api.types.is_numeric_dtype(df[col]):
-                metrics["avg_salary"] = round(float(df[col].mean()), 2)
+            elif ("monthlyincome" in col_lower or "income" in col_lower or "salary" in col_lower) and pd.api.types.is_numeric_dtype(df[col]):
+                metrics[f"avg_{col.lower().replace(' ', '_')}"] = round(float(df[col].mean()), 2)
+
+            elif "hourlyrate" in col_lower and pd.api.types.is_numeric_dtype(df[col]):
+                metrics["avg_hourly_rate"] = round(float(df[col].mean()), 2)
+
+            elif "age" == col_lower and pd.api.types.is_numeric_dtype(df[col]):
+                metrics["avg_age"] = round(float(df[col].mean()), 2)
+
+        if not metrics:
+            add_generic_numeric_kpis()
 
     else:
         metrics["row_count"] = int(df.shape[0])
         metrics["column_count"] = int(df.shape[1])
+        add_generic_numeric_kpis()
 
     return {
         "domain": domain,
@@ -976,28 +993,32 @@ def build_kpi_text(kpi: Dict[str, Any]) -> str:
 
 
 # ============================================================
-# ML Readiness Report
+# ML Readiness Report (UPDATED for ambiguity + signal ranking)
 # ============================================================
 def build_ml_readiness_report(analysis: Dict[str, Any]) -> Dict[str, Any]:
     target = analysis.get("target_analysis", {})
     target_col = target.get("target_column")
     task_type = target.get("task_type", "unknown")
     confidence = target.get("confidence", "low")
+    ambiguous = target.get("ambiguous", False)
 
     high_missing = analysis.get("high_missing_columns", {})
     constant_cols = analysis.get("column_types", {}).get("constant_cols", [])
-    fi = analysis.get("feature_importance", {})
+    id_like_cols = analysis.get("column_types", {}).get("id_like_cols", [])
+    duplicate_rows = analysis.get("duplicate_rows", 0)
+    sr = analysis.get("signal_ranking", {})
 
-    is_ml_ready = True
     preprocessing_recommendations = []
     leakage_risk = []
 
     if not target_col:
-        is_ml_ready = False
         preprocessing_recommendations.append("No reliable target detected. Define a valid label/target column.")
 
     if confidence == "low":
         preprocessing_recommendations.append("Target detection confidence is low; manually validate the target column.")
+
+    if ambiguous:
+        preprocessing_recommendations.append("Multiple plausible targets detected; confirm the intended modeling target manually.")
 
     if len(high_missing) > 3:
         preprocessing_recommendations.append("Multiple high-missing columns detected; apply imputation or feature pruning.")
@@ -1005,8 +1026,33 @@ def build_ml_readiness_report(analysis: Dict[str, Any]) -> Dict[str, Any]:
     if constant_cols:
         preprocessing_recommendations.append("Drop constant columns before model training.")
 
-    if not fi.get("available", False):
-        preprocessing_recommendations.append("Feature importance unavailable; validate target and preprocessing pipeline.")
+    if id_like_cols:
+        preprocessing_recommendations.append("Exclude identifier-like columns from modeling unless explicitly justified.")
+        leakage_risk.append("Identifier-like columns detected; ensure they are excluded from feature set.")
+
+    if duplicate_rows > 0:
+        preprocessing_recommendations.append("Review duplicate rows before training.")
+
+    if not sr.get("available", False):
+        preprocessing_recommendations.append("Signal ranking unavailable; validate target and preprocessing pipeline.")
+
+    severe_missing_count = len([v for v in high_missing.values() if v >= 40])
+    moderate_missing_count = len([v for v in high_missing.values() if 20 <= v < 40])
+
+    is_ml_ready = True
+
+    if not target_col:
+        is_ml_ready = False
+    elif confidence == "low":
+        is_ml_ready = False
+    elif ambiguous:
+        is_ml_ready = False
+    elif severe_missing_count > 0:
+        is_ml_ready = False
+    elif not sr.get("available", False):
+        is_ml_ready = False
+    elif duplicate_rows > 20:
+        is_ml_ready = False
 
     class_imbalance_flag = False
 
@@ -1016,12 +1062,23 @@ def build_ml_readiness_report(analysis: Dict[str, Any]) -> Dict[str, Any]:
     elif task_type == "regression":
         baseline_models = ["Linear Regression", "Random Forest Regressor", "XGBoost Regressor (optional later)"]
 
+    readiness_label = (
+        "Ready"
+        if is_ml_ready and moderate_missing_count == 0 and len(constant_cols) == 0 and duplicate_rows == 0
+        else "Conditionally Ready"
+        if target_col
+        else "Not Ready"
+    )
+
     return {
         "target_detected": bool(target_col),
         "target_column": target_col,
         "task_type": task_type,
         "confidence": confidence,
+        "ambiguous_target": ambiguous,
+        "alternate_targets": target.get("alternate_targets", []),
         "is_ml_ready": is_ml_ready,
+        "readiness_label": readiness_label,
         "class_imbalance_flag": class_imbalance_flag,
         "leakage_risk": leakage_risk,
         "preprocessing_recommendations": preprocessing_recommendations,
@@ -1037,7 +1094,14 @@ def build_ml_readiness_text(mlr: Dict[str, Any]) -> str:
     lines.append(f"Target Column: {mlr.get('target_column', None)}")
     lines.append(f"Task Type: {mlr.get('task_type', 'unknown')}")
     lines.append(f"Target Confidence: {mlr.get('confidence', 'low')}")
+    lines.append(f"Ambiguous Target: {mlr.get('ambiguous_target', False)}")
+
+    alt_targets = mlr.get("alternate_targets", [])
+    if alt_targets:
+        lines.append(f"Alternate Targets: {alt_targets}")
+
     lines.append(f"ML Ready: {mlr.get('is_ml_ready', False)}")
+    lines.append(f"Readiness Label: {mlr.get('readiness_label', 'Unknown')}")
     lines.append(f"Class Imbalance Flag: {mlr.get('class_imbalance_flag', False)}")
     lines.append("")
 
