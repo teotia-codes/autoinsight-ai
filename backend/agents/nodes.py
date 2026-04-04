@@ -1,6 +1,7 @@
 from langchain_ollama import ChatOllama
 
 from backend.agents.state import AgentState
+from backend.services.finetuned_service import query_finetuned_model
 from backend.tools.analysis_tools import (
     run_real_data_analysis,
     build_tool_analysis_text,
@@ -373,6 +374,17 @@ Write the report in markdown with this exact structure:
 - short, grounded conclusion
 """
 
-    response = llm.invoke(prompt)
-    state["final_report"] = response.content
+    # Use fine-tuned TinyLlama + LoRA adapter for report generation
+    # Falls back to Ollama automatically if the fine-tuned model fails
+    finetuned_output = query_finetuned_model(prompt, max_new_tokens=512)
+
+    if finetuned_output.startswith("[Fine-tuned model error]"):
+        print(f"[final_report_node] Fine-tuned model failed: {finetuned_output}")
+        print("[final_report_node] Falling back to Ollama...")
+        response = llm.invoke(prompt)
+        state["final_report"] = response.content
+    else:
+        print("[final_report_node] Fine-tuned model used successfully.")
+        state["final_report"] = finetuned_output
+
     return state

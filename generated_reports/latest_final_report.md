@@ -1,79 +1,90 @@
 # Final Report
 
 ## Executive Summary
-The primary analysis priorities are focused on understanding revenue generation, discount impact, customer segmentation effectiveness, and regional performance. Key questions revolve around identifying top-performing segments, regions, and products. The checks include ensuring data quality, detecting outliers, analyzing correlations, validating target validity, and preparing the dataset for potential machine learning applications. Visualizations will help in gaining insights into complex relationships within the dataset.
+This executive analytics report provides a comprehensive analysis of the dataset focused on clinical measurements related to kidney disease and other health conditions. The primary focus is on identifying key clinical indicators for predicting these diseases, addressing data quality issues, and ensuring the dataset is ready for predictive modeling. Key findings include handling missing values, detecting outliers, balancing class imbalance, understanding correlations between biomarkers and disease outcomes, and recommending feature engineering steps. The report emphasizes patient risk indicators, data quality concerns in medical measurements, clinical relevance of strong relationships, model readiness for disease prediction, and cautions that findings are supportive rather than definitive medical diagnoses.
 
 ## Target Validation
-- **Selected Target**: `Sales`
-- **Task Type**: regression
-- **Confidence**: medium
-- **Ambiguous**: True
-- **Alternate Targets**: `Quantity`, `Profit`
-- **Note**: Selected based on semantic relevance + cardinality + domain-aware rules. Multiple plausible targets detected; manual confirmation recommended.
+- **Selected Target:** Diagnosis (binary classification task)
+- **Task Type:** Classification
+- **Confidence:** High
+- **Ambiguous Target:** False
+
+The target `Diagnosis` was selected based on semantic relevance, domain-aware rules, and high cardinality. No alternate targets were identified; manual confirmation is recommended if necessary.
 
 ## Key Data Quality Findings
-- **Missingness**: 
-  - `Order Date`: 39.12% missing
-  - `Ship Date`: 38.67% missing
-  - `Postal Code`: 80.51% missing
-- **Duplicates**: None detected.
-- **Outliers**: Potential outliers in `Sales`, `Profit`, and `Quantity` columns need to be investigated further.
-- **Identifier-Like Columns / Leakage Risks**: No identifier-like columns detected; no leakage risks identified.
+1. **Missing Values:**
+   - 1 constant column detected (`constant_0`). These columns do not add analytical or ML value and should be dropped.
+2. **Duplicates:** None found.
+3. **Outliers:**
+   - No outliers were identified in the dataset, but further investigation is recommended for continuous variables to ensure valid cases are not overlooked.
+4. **Identifier-Like Columns / Leakage Risks:**
+   - No identifier-like columns detected; all columns appear to be relevant and do not pose leakage risks.
 
 ## Key Statistical / Analytical Findings
-- **Correlations**:
-  - `Sales ↔ Profit`: 0.4849 (moderate)
-  - `Discount ↔ Profit`: -0.3165 (moderate)
-  - `Sales ↔ Quantity`: 0.3136 (moderate)
-  - `Quantity ↔ Profit`: 0.1044 (weak)
-  - `Sales ↔ Discount`: -0.0867 (negligible)
-  - `Quantity ↔ Discount`: -0.0199 (negligible)
+1. **Correlations:**
+   - Correlation analysis was conducted using robust statistical methods (e.g., correlation matrices) to validate the relationships between biomarkers and disease outcomes.
+2. **Distribution/Trends:**
+   - The distribution of `Age` shows a central tendency, spread, skewness, and potential extreme values. This helps assess the age distribution across different groups.
+3. **Important Observations:**
+   - A scatter plot comparing `SystolicBP` with `Diagnosis` reveals possible associations between blood pressure levels and disease outcomes.
 
 ## KPI Highlights
-- **Total Sales**: $1,264,250.19
-- **Average Sales**: $246.49
-- **Total Profit**: $146,745.73
-- **Average Profit Margin Percentage**: 11.61%
+- **Class Distribution:** The dataset has a class imbalance where 1524 out of 1659 samples belong to the positive class (`1`) and 135 samples belong to the negative class (`0`). This imbalance should be addressed by balancing the dataset.
+- **Average Blood Pressure:** The average `SystolicBP` is 134.392, indicating moderate blood pressure levels.
 
 ## Signal Ranking Highlights
-The top signals based on model-based feature importance are:
-- `Profit`: 0.6976
-- `Discount`: 0.0441
-- `Quantity`: 0.0405
-- `Sub-Category`: 0.0326
-- `Product Name`: 0.0263
-- `Ship Date`: 0.0241
-- `Order Date`: 0.0228
-- `Customer Name`: 0.0188
-- `Category`: 0.0177
-- `City`: 0.0176
+The signal ranking based on Random Forest feature importance highlights several key clinical indicators and biomarkers that are strongly associated with disease outcomes:
+- **Age**
+- **Gender**
+- **Ethnicity**
+- **Socioeconomic Status**
+- **Education Level**
+- **Smoking**
+- **Family History of Hypertension/Diabetes**
+
+These features should be prioritized for feature engineering to improve model performance and interpretability.
 
 ## Visualization Insights
-- **Histogram of Sales**: This histogram shows the distribution of sales, helping assess central tendency, spread, skewness, and possible extreme values.
-- **Boxplot of Profit**: This boxplot highlights the spread of profit and potential outliers. Points beyond the whiskers may represent unusual or extreme observations worth validating.
-- **Bar Chart of Ship Mode**: This bar chart shows the most frequent categories in `Ship Mode`, helping identify dominant categories, class imbalance, and concentration patterns.
-- **Scatter Plot of Sales vs Profit**: This scatter plot compares sales and profit. It helps visually assess direction, clustering, possible association, and outliers.
+1. **Histogram: Age**
+   - This chart shows the distribution of `Age`, helping assess central tendency, spread, skewness, and possible extreme values.
+2. **Boxplot: Age**
+   - The boxplot highlights the spread of `Age` and potential outliers. Points beyond the whiskers may represent unusual or extreme observations worth validating.
+3. **Scatter Plot: SystolicBP vs Diagnosis**
+   - This scatter plot compares `SystolicBP` with `Diagnosis`, helping visually assess direction, clustering, possible association, and outliers.
 
 ## ML Readiness Assessment
-- **Target Detection**: True
-- **Task Type**: regression
-- **Target Confidence**: medium
-- **Ambiguous Target**: True
-- **Alternate Targets**: `Quantity`, `Profit`
-- **ML Ready Label**: Conditionally Ready
-- **Preprocessing Needs**:
-  - Multiple plausible targets detected; confirm the intended modeling target manually.
-  - Exclude identifier-like columns from modeling unless explicitly justified.
+- **Target Detected:** True
+- **Task Type:** Classification
+- **Target Confidence:** High
+- **Ambiguous Target:** False
+- **ML Ready Label:** Conditionally Ready
+- **Preprocessing Needs:**
+  - Drop constant columns.
+- **Baseline Models:**
+  - Logistic Regression
+  - Random Forest Classifier
 
 ## Risks / Cautions
-1. **Ambiguous Target**: Manual confirmation is recommended for the target column `Sales`.
-2. **Potential Outliers**: Investigate potential outliers to ensure they represent true extreme cases rather than data quality issues.
-3. **Missing Data**: Handle missing values appropriately (e.g., imputation or exclusion) to avoid bias in analysis results.
+1. **Signal Ranking:** The feature importance signals derived from Random Forest should be interpreted with caution as they are model-based and not causal proof.
+2. **Visualizations:** Ensure that visualizations are clear and informative. For example, using scatter plots instead of histograms for continuous variables can provide more meaningful insights.
 
 ## Actionable Recommendations
-1. Manually confirm the target column `Sales` as it is flagged as ambiguous.
-2. Apply domain-aware imputation for columns with moderate missingness and validate outliers in severely incomplete columns.
-3. Investigate potential outliers to ensure they are not data quality issues but rather true anomalies.
+1. **Handle Missing Values Appropriately:**
+   - Use appropriate imputation techniques or drop strategies for missing values in numeric columns.
+2. **Address Outliers:**
+   - Investigate outliers further to determine if they represent valid cases or data entry errors, and consider robust statistics (e.g., median) or transformations (e.g., winsorization).
+3. **Class Imbalance:**
+   - If class imbalance is detected, consider techniques like oversampling, undersampling, or SMOTE for balancing the dataset.
+4. **Feature Engineering:**
+   - Focus on domain-relevant features and avoid arbitrary feature engineering unless justified by clinical knowledge.
+5. **Model Readiness:**
+   - Ensure the dataset is clean and ready for modeling by addressing missing values, outliers, and class imbalance issues.
+6. **Visualizations:**
+   - Use clear and informative visualizations such as scatter plots instead of histograms where appropriate.
+7. **Signal Ranking:**
+   - Interpret feature importance signals with caution and consider domain knowledge to validate the significance of these features.
 
 ## Conclusion
-The analysis has identified key performance indicators such as total sales, average sales, total profit, and average profit margin percentage. The top signals based on model-based feature importance include `Profit`, `Discount`, `Quantity`, and other relevant features. Visualizations have provided insights into the distribution of sales and profits, while potential outliers need further investigation. Recommendations for handling missing data and confirming target validity are crucial steps to ensure robust analysis results.
+This dataset is well-suited for predictive modeling focused on identifying key clinical indicators related to kidney disease and other health conditions. By addressing data quality issues, balancing class imbalance, and focusing on clinically relevant features, the model can be improved for better performance and interpretability. The findings should be interpreted with caution as they are supportive rather than definitive medical diagnoses.
+
+By following these recommendations, the analysis can be further validated and improved for better model performance and interpretability.

@@ -37,7 +37,7 @@ def load_finetuned_model():
     print("[FineTuned Service] Loading base model...")
     base_model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         device_map="auto"
     )
 
