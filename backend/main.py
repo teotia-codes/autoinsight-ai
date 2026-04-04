@@ -14,7 +14,7 @@ from backend.services.ollama_service import query_ollama
 from backend.rag.ingest import ingest_document_to_chroma
 from backend.rag.retrieve import retrieve_relevant_context
 from backend.agents.graph import build_agent_graph
-
+from backend.services.finetuned_service import load_finetuned_model
 
 # ============================================================
 # App Setup
@@ -317,3 +317,11 @@ async def agentic_analysis(request: AskRequest):
     except Exception as e:
         print("AGENTIC ANALYSIS ERROR:\n", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Agentic analysis failed: {str(e)}")
+@app.on_event("startup")
+async def preload_models():
+    try:
+        print("[Startup] Preloading fine-tuned model...")
+        load_finetuned_model()
+        print("[Startup] Fine-tuned model preloaded successfully.")
+    except Exception as e:
+        print(f"[Startup] Fine-tuned model preload failed: {e}")    

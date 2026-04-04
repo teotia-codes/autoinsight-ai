@@ -1,90 +1,104 @@
-# Final Report
+You are a senior data analyst writing a polished executive analytics report.
 
-## Executive Summary
-This executive analytics report provides a comprehensive analysis of the dataset focused on clinical measurements related to kidney disease and other health conditions. The primary focus is on identifying key clinical indicators for predicting these diseases, addressing data quality issues, and ensuring the dataset is ready for predictive modeling. Key findings include handling missing values, detecting outliers, balancing class imbalance, understanding correlations between biomarkers and disease outcomes, and recommending feature engineering steps. The report emphasizes patient risk indicators, data quality concerns in medical measurements, clinical relevance of strong relationships, model readiness for disease prediction, and cautions that findings are supportive rather than definitive medical diagnoses.
+Create a FINAL REPORT using the evidence below.
 
-## Target Validation
-- **Selected Target:** Diagnosis (binary classification task)
-- **Task Type:** Classification
-- **Confidence:** High
-- **Ambiguous Target:** False
+IMPORTANT RULES:
+1. Be accurate and conservative. Do NOT exaggerate.
+2. If target selection is ambiguous, explicitly mention that the selected target is the default choice and manual confirmation is recommended.
+3. Use the term "Signal Ranking" instead of "Feature Importance".
+4. If ML readiness is not fully clean, say "Conditionally Ready" or "Requires preprocessing" instead of claiming the dataset is fully ready.
+5. Do NOT repeat the verification section verbatim.
+6. Keep the report executive, analytical, and grounded.
+7. Do NOT claim causality from correlations or model-based signal ranking.
 
-The target `Diagnosis` was selected based on semantic relevance, domain-aware rules, and high cardinality. No alternate targets were identified; manual confirmation is recommended if necessary.
+INPUTS:
 
-## Key Data Quality Findings
-1. **Missing Values:**
-   - 1 constant column detected (`constant_0`). These columns do not add analytical or ML value and should be dropped.
-2. **Duplicates:** None found.
-3. **Outliers:**
-   - No outliers were identified in the dataset, but further investigation is recommended for continuous variables to ensure valid cases are not overlooked.
-4. **Identifier-Like Columns / Leakage Risks:**
-   - No identifier-like columns detected; all columns appear to be relevant and do not pose leakage risks.
+Planner Output:
+### Analysis Priorities
 
-## Key Statistical / Analytical Findings
-1. **Correlations:**
-   - Correlation analysis was conducted using robust statistical methods (e.g., correlation matrices) to validate the relationships between biomarkers and disease outcomes.
-2. **Distribution/Trends:**
-   - The distribution of `Age` shows a central tendency, spread, skewness, and potential extreme values. This helps assess the age distribution across different groups.
-3. **Important Observations:**
-   - A scatter plot comparing `SystolicBP` with `Diagnosis` reveals possible associations between blood pressure levels and disease outcomes.
+1. **Understanding Employee Attrition:**
+   - Investigate why employees leave the company (target variable).
+2. **Employee Satisfaction Factors:**
+   - Analyze factors influencing employee satisfaction such as job involvement, work-life balance, and departmental distribution.
+3. **Work-Life Balance and Overtime:**
+   - Examine the impact of overtime and work-life balance on attrition.
+4. **Salary and Years at Company:**
+   - Evaluate how salary levels and tenure affect employee retention.
+5. **Job Role and Department Distribution:**
+   - Analyze job role distribution across departments to identify potential issues or opportunities.
 
-## KPI Highlights
-- **Class Distribution:** The dataset has a class imbalance where 1524 out of 1659 samples belong to the positive class (`1`) and 135 samples belong to the negative class (`0`). This imbalance should be addressed by balancing the dataset.
-- **Average Blood Pressure:** The average `SystolicBP` is 134.392, indicating moderate blood pressure levels.
+### Business / Domain Questions
 
-## Signal Ranking Highlights
-The signal ranking based on Random Forest feature importance highlights several key clinical indicators and biomarkers that are strongly associated with disease outcomes:
-- **Age**
-- **Gender**
-- **Ethnicity**
-- **Socioeconomic Status**
-- **Education Level**
-- **Smoking**
-- **Family History of Hypertension/Diabetes**
+1. **Why do employees leave?** What are the key reasons for attrition?
+2. **What factors influence employee satisfaction?** How can we improve these areas?
+3. **How does overtime impact employee retention?**
+4. **Are salary levels and years at company significant predictors of attrition?**
+5. **Is there a specific job role or department that contributes more to attrition?**
 
-These features should be prioritized for feature engineering to improve model performance and interpretability.
+### What Should Be Checked
 
-## Visualization Insights
-1. **Histogram: Age**
-   - This chart shows the distribution of `Age`, helping assess central tendency, spread, skewness, and possible extreme values.
-2. **Boxplot: Age**
-   - The boxplot highlights the spread of `Age` and potential outliers. Points beyond the whiskers may represent unusual or extreme observations worth validating.
-3. **Scatter Plot: SystolicBP vs Diagnosis**
-   - This scatter plot compares `SystolicBP` with `Diagnosis`, helping visually assess direction, clustering, possible association, and outliers.
+#### Target Validity
+- Ensure the target variable (Attrition) is binary (0/1).
 
-## ML Readiness Assessment
-- **Target Detected:** True
-- **Task Type:** Classification
-- **Target Confidence:** High
-- **Ambiguous Target:** False
-- **ML Ready Label:** Conditionally Ready
-- **Preprocessing Needs:**
-  - Drop constant columns.
-- **Baseline Models:**
-  - Logistic Regression
-  - Random Forest Classifier
+#### Data Quality
+- Check for missing values and outliers in numeric columns.
+- Verify data types, especially for categorical variables.
 
-## Risks / Cautions
-1. **Signal Ranking:** The feature importance signals derived from Random Forest should be interpreted with caution as they are model-based and not causal proof.
-2. **Visualizations:** Ensure that visualizations are clear and informative. For example, using scatter plots instead of histograms for continuous variables can provide more meaningful insights.
+#### Correlations
+- Identify correlations between Attrition and other key features like AgeGroup, EducationField, JobRole, etc.
 
-## Actionable Recommendations
-1. **Handle Missing Values Appropriately:**
-   - Use appropriate imputation techniques or drop strategies for missing values in numeric columns.
-2. **Address Outliers:**
-   - Investigate outliers further to determine if they represent valid cases or data entry errors, and consider robust statistics (e.g., median) or transformations (e.g., winsorization).
-3. **Class Imbalance:**
-   - If class imbalance is detected, consider techniques like oversampling, undersampling, or SMOTE for balancing the dataset.
-4. **Feature Engineering:**
-   - Focus on domain-relevant features and avoid arbitrary feature engineering unless justified by clinical knowledge.
-5. **Model Readiness:**
-   - Ensure the dataset is clean and ready for modeling by addressing missing values, outliers, and class imbalance issues.
-6. **Visualizations:**
-   - Use clear and informative visualizations such as scatter plots instead of histograms where appropriate.
-7. **Signal Ranking:**
-   - Interpret feature importance signals with caution and consider domain knowledge to validate the significance of these features.
+#### Outliers
+- Detect and handle any outliers in numerical columns.
 
-## Conclusion
-This dataset is well-suited for predictive modeling focused on identifying key clinical indicators related to kidney disease and other health conditions. By addressing data quality issues, balancing class imbalance, and focusing on clinically relevant features, the model can be improved for better performance and interpretability. The findings should be interpreted with caution as they are supportive rather than definitive medical diagnoses.
+#### Key Performance Indicators (KPIs)
+- Monitor the performance of different feature importance models.
+- Track model accuracy, precision, recall, F1-score for Attrition prediction.
 
-By following these recommendations, the analysis can be further validated and improved for better model performance and interpretability.
+#### Signal Ranking
+- Rank features based on their predictive power using correlation coefficients or other ranking methods.
+
+#### ML Readiness
+- Ensure data is clean and ready for modeling. Check for any transformations needed (e.g., encoding categorical variables).
+
+#### Visualizations
+- Create visualizations to understand the distribution of Attrition, AgeGroup, EducationField, JobRole, etc.
+- Use heatmaps to identify correlations between features.
+
+### Plan Structure
+
+1. **Data Cleaning:**
+   - Handle missing values in YearsWithCurrManager.
+   - Check for and handle outliers in numeric columns.
+   - Verify data types and encode categorical variables if necessary.
+
+2. **Exploratory Data Analysis (EDA):**
+   - Visualize distributions of key features like Age, EducationField, JobRole, etc.
+   - Create correlation matrices to identify potential predictors of Attrition.
+   - Plot histograms for numerical features to understand their distribution.
+
+3. **Feature Engineering:**
+   - Create new features if necessary (e.g., tenure in years).
+   - Encode categorical variables using one-hot encoding or label encoding.
+
+4. **Model Evaluation:**
+   - Split the dataset into training and testing sets.
+   - Train various models (e.g., Logistic Regression, Random Forest, Gradient Boosting) to predict Attrition.
+   - Evaluate model performance using metrics like accuracy, precision, recall, F1-score.
+
+5. **Feature Importance Analysis:**
+   - Use feature importance scores from the trained models to identify key predictors of Attrition.
+
+6. **Visualization and Reporting:**
+   - Create a final report using the evidence above.
+   - Use a clear and concise language to communicate the findings and conclusions.
+   - Include recommendations for improvement based on the findings.
+
+7. **Recommendations:**
+   - Identify key areas for improvement based on the findings.
+   - Provide recommendations for addressing these areas.
+   - Provide a detailed plan for addressing the identified areas.
+
+8. **Conclusion:**
+   - Summarize the key findings and recommendations.
+   - Provide a conclusion that summarizes the findings and recommendations.
+   - Include a call to action for the client to take action based on the findings.

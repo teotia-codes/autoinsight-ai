@@ -1,5 +1,5 @@
 from langchain_ollama import ChatOllama
-
+from backend.config import OLLAMA_MODEL, OLLAMA_BASE_URL
 from backend.agents.state import AgentState
 from backend.services.finetuned_service import query_finetuned_model
 from backend.tools.analysis_tools import (
@@ -16,8 +16,11 @@ from backend.tools.visualization_tools import generate_recommended_visualization
 from backend.rag.retrieve import retrieve_relevant_context
 
 # Local LLM via Ollama
-llm = ChatOllama(model="qwen2.5:3b", temperature=0.1)
-
+llm = ChatOllama(
+    model=OLLAMA_MODEL,
+    base_url=OLLAMA_BASE_URL,
+    temperature=0.1
+)
 
 # ============================================================
 # 1. Planner Node
@@ -51,8 +54,23 @@ Your job:
 5. Do NOT make unsupported claims.
 """
 
-    response = llm.invoke(prompt)
-    state["planner_output"] = response.content
+    try:
+        response = llm.invoke(prompt)
+        state["planner_output"] = response.content
+        print("[planner_node] Ollama planner succeeded.")
+    except Exception as e:
+        print(f"[planner_node] Ollama failed: {e}")
+        state["planner_output"] = """
+# Analysis Plan (Fallback)
+
+1. Review dataset structure, schema, and datatypes.
+2. Identify likely target candidates and validate ambiguity.
+3. Assess missing values, duplicates, outliers, and leakage risks.
+4. Compute KPIs and descriptive analytics.
+5. Review signal ranking and correlations cautiously.
+6. Generate business-relevant visualizations.
+7. Assess ML readiness and preprocessing needs.
+"""
     return state
 
 
@@ -210,7 +228,7 @@ def ml_readiness_node(state: AgentState) -> AgentState:
 
 
 # ============================================================
-# 9. Verifier Node (UPDATED)
+# 9. Verifier Node (SAFE FALLBACK ADDED)
 # ============================================================
 def verifier_node(state: AgentState) -> AgentState:
     prompt = f"""
@@ -269,13 +287,36 @@ Return:
 Return a concise, evidence-grounded verification report in markdown.
 """
 
-    response = llm.invoke(prompt)
-    state["verifier_output"] = response.content
+    try:
+        response = llm.invoke(prompt)
+        state["verifier_output"] = response.content
+        print("[verifier_node] Ollama verifier succeeded.")
+    except Exception as e:
+        print(f"[verifier_node] Ollama failed: {e}")
+        state["verifier_output"] = """
+# Verification Report (Fallback)
+
+## Analysis Priorities
+- Focus on target validation, data quality, KPIs, signal ranking, and ML readiness.
+
+## Validation Notes
+- Results should be treated as exploratory unless explicitly model-validated.
+- Signal ranking should not be interpreted as causality.
+
+## Issues Found
+- Manual review of target selection is recommended if multiple target candidates exist.
+
+## Risks / Cautions
+- Identifier-like fields, leakage, and outliers may distort findings.
+
+## Recommendations
+- Validate target manually, review preprocessing, and confirm business assumptions before modeling.
+"""
     return state
 
 
 # ============================================================
-# 10. Final Report Node (UPDATED)
+# 10. Final Report Node (SAFE FALLBACK ADDED)
 # ============================================================
 def final_report_node(state: AgentState) -> AgentState:
     prompt = f"""
@@ -381,8 +422,49 @@ Write the report in markdown with this exact structure:
     if finetuned_output.startswith("[Fine-tuned model error]"):
         print(f"[final_report_node] Fine-tuned model failed: {finetuned_output}")
         print("[final_report_node] Falling back to Ollama...")
-        response = llm.invoke(prompt)
-        state["final_report"] = response.content
+
+        try:
+            response = llm.invoke(prompt)
+            state["final_report"] = response.content
+            print("[final_report_node] Ollama fallback succeeded.")
+        except Exception as e:
+            print(f"[final_report_node] Ollama fallback failed: {e}")
+            state["final_report"] = """
+# Final Report
+
+## Executive Summary
+- Automated analysis completed with partial fallback mode due to LLM runtime constraints.
+
+## Target Validation
+- Review the selected target manually if multiple candidate targets exist.
+
+## Key Data Quality Findings
+- Refer to the generated tool analysis and data quality outputs.
+
+## Key Statistical / Analytical Findings
+- Treat correlations and signal ranking as exploratory evidence only.
+
+## KPI Highlights
+- Review computed KPIs from the tool outputs.
+
+## Signal Ranking Highlights
+- Treat model-based signal ranking as directional, not causal.
+
+## Visualization Insights
+- Review generated charts carefully, especially identifier-like columns.
+
+## ML Readiness Assessment
+- Dataset may require preprocessing before production modeling.
+
+## Risks / Cautions
+- LLM summarization fallback was triggered; verify conclusions manually.
+
+## Actionable Recommendations
+- Validate target, clean data, inspect leakage, and test baseline models.
+
+## Conclusion
+- Analysis completed with fallback safeguards; results remain usable but should be reviewed.
+"""
     else:
         print("[final_report_node] Fine-tuned model used successfully.")
         state["final_report"] = finetuned_output

@@ -1,5 +1,6 @@
 import os
 import torch
+import traceback
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
@@ -7,8 +8,6 @@ from peft import PeftModel
 # CONFIG
 # =========================================================
 BASE_MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-
-# Adjust path if needed
 ADAPTER_PATH = os.path.join("models", "lora-final-report")
 
 # Global cache so model loads only once
@@ -28,27 +27,51 @@ def load_finetuned_model():
             f"Make sure you copied the adapter folder into autoinsight-ai/models/lora-final-report"
         )
 
-    print("[FineTuned Service] Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH)
+    try:
+        print("[FineTuned Service] Loading tokenizer...")
+        # SAFER: load tokenizer from base model, not adapter folder
+        tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
 
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
-    print("[FineTuned Service] Loading base model...")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL,
-        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto"
-    )
+        print("[FineTuned Service] Tokenizer loaded successfully.")
 
-    print("[FineTuned Service] Loading LoRA adapter...")
-    model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
-    model.eval()
+        print("[FineTuned Service] Loading base model...")
 
-    _tokenizer = tokenizer
-    _model = model
+        # Safe loading for Windows/local laptop
+        if torch.cuda.is_available():
+            base_model = AutoModelForCausalLM.from_pretrained(
+                BASE_MODEL,
+                torch_dtype=torch.float16
+            )
+            base_model = base_model.to("cuda")
+        else:
+            base_model = AutoModelForCausalLM.from_pretrained(
+                BASE_MODEL,
+                torch_dtype=torch.float32,
+                low_cpu_mem_usage=True
+            )
+            base_model = base_model.to("cpu")
 
-    return _tokenizer, _model
+        print("[FineTuned Service] Base model loaded successfully.")
+
+        print("[FineTuned Service] Loading LoRA adapter...")
+        model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+
+        model.eval()
+        print("[FineTuned Service] LoRA adapter loaded successfully.")
+        print("[FineTuned Service] Fine-tuned model ready.")
+
+        _tokenizer = tokenizer
+        _model = model
+
+        return _tokenizer, _model
+
+    except Exception as e:
+        print("[FineTuned Service] ERROR while loading model:")
+        traceback.print_exc()
+        raise e
 
 
 def query_finetuned_model(prompt: str, max_new_tokens: int = 220) -> str:
@@ -59,7 +82,10 @@ def query_finetuned_model(prompt: str, max_new_tokens: int = 220) -> str:
     try:
         tokenizer, model = load_finetuned_model()
 
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        # Put inputs on the same device as model
+        model_device = next(model.parameters()).device
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+        inputs = {k: v.to(model_device) for k, v in inputs.items()}
 
         with torch.no_grad():
             outputs = model.generate(
@@ -73,11 +99,13 @@ def query_finetuned_model(prompt: str, max_new_tokens: int = 220) -> str:
 
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-        # Return only the generated continuation if possible
-        if prompt in response:
+        # Return only generated continuation if prompt is included
+        if response.startswith(prompt):
             response = response[len(prompt):].strip()
 
         return response.strip()
 
     except Exception as e:
+        print("[FineTuned Service] QUERY ERROR:")
+        traceback.print_exc()
         return f"[Fine-tuned model error] {str(e)}"
