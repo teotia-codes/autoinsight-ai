@@ -6,6 +6,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from backend.models import AskRequest
 from backend.utils import save_upload_file, get_csv_summary, generate_dataset_profile
@@ -14,8 +15,7 @@ from backend.services.ollama_service import query_ollama
 from backend.rag.ingest import ingest_document_to_chroma
 from backend.rag.retrieve import retrieve_relevant_context
 from backend.agents.graph import build_agent_graph
-from backend.services.finetuned_service import load_finetuned_model
-
+from backend.services.finetuned_service import load_finetuned_model, refine_full_report_chunked
 # ============================================================
 # App Setup
 # ============================================================
@@ -23,12 +23,11 @@ app = FastAPI(title="AutoInsight AI Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # okay for local dev + Vercel demo
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ============================================================
 # Paths
@@ -43,6 +42,9 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DOCS_DIR, exist_ok=True)
 os.makedirs(VECTORSTORE_ROOT, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
+
+# Serve static files (important for charts/images later)
+app.mount("/static", StaticFiles(directory="data"), name="static")
 
 
 # ============================================================
@@ -269,8 +271,8 @@ async def agentic_analysis(request: AskRequest):
             "kpi_output": "",
             "kpi_structured": {},
 
-            "feature_importance_output": "",
-            "feature_importance_structured": {},
+            "signal_ranking_output": "",
+            "signal_ranking_structured": {},
 
             "visualizations": [],
             "chart_paths": [],
@@ -284,6 +286,17 @@ async def agentic_analysis(request: AskRequest):
         }
 
         result = graph.invoke(initial_state)
+
+        # ============================================================
+        # Fine-tuned chunked refinement (safe fallback)
+        # ============================================================
+        draft_report = result.get("final_report", "")
+
+        if draft_report and draft_report.strip():
+            print("[Agentic Analysis] Running chunked fine-tuned refinement...")
+            refined_report = refine_full_report_chunked(draft_report)
+        else:
+            refined_report = draft_report
 
         return {
             "message": "Agentic analysis completed successfully",
@@ -300,8 +313,8 @@ async def agentic_analysis(request: AskRequest):
             "kpi_output": result.get("kpi_output", ""),
             "kpi_structured": result.get("kpi_structured", {}),
 
-            "feature_importance_output": result.get("feature_importance_output", ""),
-            "feature_importance_structured": result.get("feature_importance_structured", {}),
+            "signal_ranking_output": result.get("signal_ranking_output", ""),
+            "signal_ranking_structured": result.get("signal_ranking_structured", {}),
 
             "visualizations": result.get("visualizations", []),
             "chart_paths": result.get("chart_paths", []),
@@ -311,12 +324,17 @@ async def agentic_analysis(request: AskRequest):
             "ml_readiness_structured": result.get("ml_readiness_structured", {}),
 
             "verifier_output": result.get("verifier_output", ""),
-            "final_report": result.get("final_report", ""),
+
+            "draft_report": draft_report,
+            "final_report": refined_report,
         }
 
     except Exception as e:
         print("AGENTIC ANALYSIS ERROR:\n", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Agentic analysis failed: {str(e)}")
+# ============================================================
+# Startup: preload fine-tuned model once
+# ============================================================
 @app.on_event("startup")
 async def preload_models():
     try:
@@ -324,4 +342,4 @@ async def preload_models():
         load_finetuned_model()
         print("[Startup] Fine-tuned model preloaded successfully.")
     except Exception as e:
-        print(f"[Startup] Fine-tuned model preload failed: {e}")    
+        print(f"[Startup] Fine-tuned model preload failed: {e}")

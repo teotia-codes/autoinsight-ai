@@ -1,0 +1,20 @@
+This dataset is related to healthcare analytics and predictive modeling.
+
+The objective is to identify important clinical patterns, abnormal biomarker relationships, missing data quality issues, and potential predictive targets.
+
+Common healthcare analysis priorities include:
+- Missing values in clinical measurements
+- Outlier detection for abnormal lab values
+- Class imbalance in disease outcome labels
+- Correlation between biomarkers and disease outcome
+- Feature engineering recommendations for predictive modeling
+- Risk-focused interpretation instead of business KPIs
+
+If the dataset contains columns such as glucose, insulin, BMI, blood pressure, age, skin thickness, pregnancies, or outcome, the analysis should focus on diabetes risk assessment and predictive modeling readiness.
+
+The final report should emphasize:
+- patient risk indicators
+- data quality concerns in medical measurements
+- clinical relevance of strong relationships
+- model readiness for disease prediction
+- caution that findings are supportive and not medical diagnosis

@@ -1,7 +1,6 @@
 from langchain_ollama import ChatOllama
 from backend.config import OLLAMA_MODEL, OLLAMA_BASE_URL
 from backend.agents.state import AgentState
-from backend.services.finetuned_service import query_finetuned_model
 from backend.tools.analysis_tools import (
     run_real_data_analysis,
     build_tool_analysis_text,
@@ -319,121 +318,113 @@ Return a concise, evidence-grounded verification report in markdown.
 # 10. Final Report Node (SAFE FALLBACK ADDED)
 # ============================================================
 def final_report_node(state: AgentState) -> AgentState:
-    prompt = f"""
+    target = state.get("target_validation_structured", {})
+    dq = state.get("data_quality_structured", {})
+    kpi = state.get("kpi_structured", {})
+    sr = state.get("signal_ranking_structured", {})
+    mlr = state.get("ml_readiness_structured", {})
+    visualizations = state.get("visualizations", [])
+
+    top_signals = sr.get("top_signals", [])[:5] if sr else []
+    top_signal_lines = "\n".join(
+        [f"- {item.get('feature')}: {item.get('importance')}" for item in top_signals]
+    ) if top_signals else "- No structured signal ranking available"
+
+    viz_lines = "\n".join(
+        [f"- {v.get('title', 'Untitled')}: {v.get('interpretation', 'No interpretation')}" for v in visualizations[:5]]
+    ) if visualizations else "- No visualizations generated"
+
+    # ============================================================
+    # STEP 1: Qwen (Ollama) creates the primary report
+    # ============================================================
+    base_prompt = f"""
 You are a senior data analyst writing a polished executive analytics report.
 
-Create a FINAL REPORT using the evidence below.
+Write ONLY the final markdown report.
+Do NOT repeat the instructions.
+Do NOT echo the prompt.
 
-IMPORTANT RULES:
-1. Be accurate and conservative. Do NOT exaggerate.
-2. If target selection is ambiguous, explicitly mention that the selected target is the default choice and manual confirmation is recommended.
-3. Use the term "Signal Ranking" instead of "Feature Importance".
-4. If ML readiness is not fully clean, say "Conditionally Ready" or "Requires preprocessing" instead of claiming the dataset is fully ready.
-5. Do NOT repeat the verification section verbatim.
-6. Keep the report executive, analytical, and grounded.
-7. Do NOT claim causality from correlations or model-based signal ranking.
+Use this exact structure:
 
-INPUTS:
+# Final Report
 
-Planner Output:
-{state.get("planner_output", "N/A")}
+## Executive Summary
+## Target Validation
+## Key Data Quality Findings
+## Key Statistical / Analytical Findings
+## KPI Highlights
+## Signal Ranking Highlights
+## Visualization Insights
+## ML Readiness Assessment
+## Risks / Cautions
+## Actionable Recommendations
+## Conclusion
 
-Tool Analysis:
-{state.get("tool_analysis_text", "N/A")}
+DATASET:
+- Filename: {state.get("filename", "N/A")}
 
-Target Validation:
-{state.get("target_validation_output", "N/A")}
+TARGET:
+- Selected Target: {target.get("target_column", "N/A")}
+- Task Type: {target.get("task_type", "N/A")}
+- Confidence: {target.get("confidence", "N/A")}
+- Ambiguous: {target.get("ambiguous", False)}
+- Note: {target.get("note", "N/A")}
 
-Data Quality:
-{state.get("data_quality_output", "N/A")}
+DATA QUALITY:
+- Quality Score: {dq.get("quality_score", "N/A")}
+- Rows: {dq.get("rows", "N/A")}
+- Columns: {dq.get("columns", "N/A")}
+- Critical Issues: {dq.get("critical_issues", [])}
+- Moderate Issues: {dq.get("moderate_issues", [])}
+- Recommendations: {dq.get("recommendations", [])}
 
 KPI:
-{state.get("kpi_output", "N/A")}
+- Domain: {kpi.get("domain", "N/A")}
+- Metrics: {kpi.get("metrics", {})}
 
-Signal Ranking:
-{state.get("signal_ranking_output", "N/A")}
+SIGNAL RANKING:
+- Available: {sr.get("available", False)}
+- Method: {sr.get("method", "N/A")}
+- Top Signals:
+{top_signal_lines}
 
-Visualization Summary:
-{state.get("visualization_summary", "N/A")}
+VISUALIZATIONS:
+{viz_lines}
 
-ML Readiness:
-{state.get("ml_readiness_output", "N/A")}
+ML READINESS:
+- ML Ready: {mlr.get("is_ml_ready", "N/A")}
+- Readiness Label: {mlr.get("readiness_label", "N/A")}
+- Class Imbalance Flag: {mlr.get("class_imbalance_flag", "N/A")}
+- Leakage Risk: {mlr.get("leakage_risk", [])}
+- Preprocessing Recommendations: {mlr.get("preprocessing_recommendations", [])}
+- Baseline Models: {mlr.get("baseline_model_suggestions", [])}
 
-Verifier:
-{state.get("verifier_output", "N/A")}
+VERIFIER NOTES:
+{state.get("verifier_output", "")[:1200]}
 
-Retrieved Business Context:
-{state.get("retrieved_context", "N/A")}
-
-Write the report in markdown with this exact structure:
-
-# Final Report
-
-## Executive Summary
-- concise business + analytical summary
-
-## Target Validation
-- selected target
-- task type
-- confidence
-- if ambiguous, mention alternate targets and recommend manual confirmation
-
-## Key Data Quality Findings
-- missingness
-- duplicates
-- outliers
-- identifier-like columns / leakage risks
-
-## Key Statistical / Analytical Findings
-- correlations
-- distribution / trends
-- important exploratory observations
-
-## KPI Highlights
-- include computed KPIs only if supported by evidence
-
-## Signal Ranking Highlights
-- summarize the top model-based signals
-- do NOT overclaim causality
-
-## Visualization Insights
-- summarize what the generated charts reveal
-- mention if any chart recommendations should be interpreted cautiously
-
-## ML Readiness Assessment
-- readiness label
-- preprocessing needs
-- baseline models
-
-## Risks / Cautions
-- explicit caveats
-
-## Actionable Recommendations
-- practical next steps
-
-## Conclusion
-- short, grounded conclusion
+IMPORTANT RULES:
+- Be accurate and conservative.
+- Do NOT claim causality.
+- If target is ambiguous, recommend manual confirmation.
+- Use the term "Signal Ranking".
+- If ML readiness is imperfect, say "Conditionally Ready" or "Requires preprocessing".
 """
 
-    # Use fine-tuned TinyLlama + LoRA adapter for report generation
-    # Falls back to Ollama automatically if the fine-tuned model fails
-    finetuned_output = query_finetuned_model(prompt, max_new_tokens=512)
+    try:
+        response = llm.invoke(base_prompt)
+        base_report = response.content.strip()
+        print("[final_report_node] Ollama Qwen base report succeeded.")
+    except Exception as e:
+        print(f"[final_report_node] Ollama failed: {e}")
+        base_report = None
 
-    if finetuned_output.startswith("[Fine-tuned model error]"):
-        print(f"[final_report_node] Fine-tuned model failed: {finetuned_output}")
-        print("[final_report_node] Falling back to Ollama...")
-
-        try:
-            response = llm.invoke(prompt)
-            state["final_report"] = response.content
-            print("[final_report_node] Ollama fallback succeeded.")
-        except Exception as e:
-            print(f"[final_report_node] Ollama fallback failed: {e}")
-            state["final_report"] = """
+    # If Qwen failed, fallback hard
+    if not base_report:
+        state["final_report"] = """
 # Final Report
 
 ## Executive Summary
-- Automated analysis completed with partial fallback mode due to LLM runtime constraints.
+- Automated analysis completed, but the final report generator encountered runtime issues.
 
 ## Target Validation
 - Review the selected target manually if multiple candidate targets exist.
@@ -457,16 +448,45 @@ Write the report in markdown with this exact structure:
 - Dataset may require preprocessing before production modeling.
 
 ## Risks / Cautions
-- LLM summarization fallback was triggered; verify conclusions manually.
+- Final report generator fallback was triggered; verify conclusions manually.
 
 ## Actionable Recommendations
 - Validate target, clean data, inspect leakage, and test baseline models.
 
 ## Conclusion
-- Analysis completed with fallback safeguards; results remain usable but should be reviewed.
+- Analysis completed with safeguards; results remain usable but should be reviewed.
 """
+        return state
+
+    # ============================================================
+    # STEP 2: Fine-tuned model refines the Qwen report
+    # ============================================================
+    refine_prompt = f"""
+You are a fine-tuned executive analytics report refiner.
+
+Your task:
+- Improve clarity
+- Improve executive tone
+- Make the report more concise and polished
+- Preserve all factual meaning
+- Do NOT add new claims
+- Do NOT remove section headings
+- Keep markdown structure intact
+
+Here is the draft report:
+
+{base_report}
+
+Return ONLY the improved markdown report.
+"""
+
+    refined_report = query_finetuned_model(refine_prompt, max_new_tokens=320)
+
+    if refined_report.startswith("[Fine-tuned model error]") or len(refined_report.strip()) < 200:
+        print("[final_report_node] Fine-tuned refinement failed or too short. Using Qwen base report.")
+        state["final_report"] = base_report
     else:
-        print("[final_report_node] Fine-tuned model used successfully.")
-        state["final_report"] = finetuned_output
+        print("[final_report_node] Fine-tuned refinement succeeded.")
+        state["final_report"] = refined_report
 
     return state
