@@ -80,18 +80,57 @@ def load_finetuned_model():
 
 
 # =========================================================
-# INTERNAL GENERATION
+# PROMPTING (QWEN CHAT FORMAT)
 # =========================================================
-def _generate_refinement(prompt: str, max_new_tokens: int = 420) -> str:
+def build_refinement_instruction(chunk_text: str) -> str:
+    return f"""Rewrite the following draft analytics report chunk into a polished executive markdown report chunk.
+
+Rules:
+- Preserve all factual meaning
+- Improve clarity and executive tone
+- Keep markdown headings and bullet structure
+- Do NOT add unsupported claims
+- Do NOT introduce dialogue or Q&A text
+- Return ONLY the improved markdown chunk
+
+Draft report chunk:
+
+{chunk_text}
+"""
+
+
+# =========================================================
+# INTERNAL GENERATION (QWEN CHAT TEMPLATE)
+# =========================================================
+def _generate_refinement(chunk_text: str, max_new_tokens: int = 320) -> str:
     tokenizer, model = load_finetuned_model()
 
     model_device = next(model.parameters()).device
 
+    system_msg = (
+        "You are an executive analytics report refiner. "
+        "Rewrite report sections cleanly in markdown. "
+        "Never output dialogue, Q&A, Human:, Assistant:, or explanations."
+    )
+
+    user_msg = build_refinement_instruction(chunk_text)
+
+    messages = [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+    prompt_text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+
     inputs = tokenizer(
-        prompt,
+        prompt_text,
         return_tensors="pt",
         truncation=True,
-        max_length=1024
+        max_length=1536
     )
     inputs = {k: v.to(model_device) for k, v in inputs.items()}
 
@@ -101,8 +140,8 @@ def _generate_refinement(prompt: str, max_new_tokens: int = 420) -> str:
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            do_sample=False,  # deterministic for structured rewriting
-            repetition_penalty=1.12,
+            do_sample=False,   # deterministic for structured rewriting
+            repetition_penalty=1.08,
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
@@ -117,22 +156,48 @@ def _generate_refinement(prompt: str, max_new_tokens: int = 420) -> str:
 
 
 # =========================================================
-# PROMPTING
+# CLEANUP
 # =========================================================
-def build_refinement_prompt(chunk_text: str) -> str:
-    return f"""### Instruction:
-Rewrite the draft analytics report chunk into a polished executive markdown report chunk.
-Preserve all facts.
-Improve clarity and professionalism.
-Maintain markdown headings and bullet structure.
-Do NOT add unsupported claims.
-Do NOT remove important information.
+def clean_refined_chunk(text: str) -> str:
+    if not text:
+        return text
 
-### Input:
-{chunk_text}
+    # Remove chat artifacts
+    text = re.sub(r"(?im)^Human:\s*", "", text)
+    text = re.sub(r"(?im)^Assistant:\s*", "", text)
+    text = re.sub(r"(?im)^User:\s*", "", text)
+    text = re.sub(r"(?im)^System:\s*", "", text)
 
-### Response:
-"""
+    # Remove fenced code blocks if model adds them
+    text = text.replace("```markdown", "").replace("```", "")
+
+    # Remove duplicated "Final Report" heading inside chunks
+    text = re.sub(r"(?m)^# Final Report\s*\n?", "", text)
+    text = re.sub(r"(?m)^Final Report\s*\n?", "", text)
+
+    # Cut off if model starts generating fake follow-up dialogue
+    stop_markers = [
+        "\nHuman:",
+        "\nAssistant:",
+        "\nUser:",
+        "\n### Task:",
+        "\n### Response:",
+        "\nInput:",
+        "\nResponse:",
+        "\nRevised Report Chunk:"
+    ]
+
+    cut_positions = [text.find(marker) for marker in stop_markers if text.find(marker) != -1]
+    if cut_positions:
+        text = text[:min(cut_positions)].strip()
+
+    # Fix heading typo if partial
+    text = text.replace("## Visualization", "## Visualization Insights")
+
+    # Remove excessive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    return text.strip()
 
 
 # =========================================================
@@ -152,40 +217,41 @@ def split_report_into_chunks(report_text: str):
         chunk2 = report_text[idx:].strip()
         return [chunk1, chunk2]
 
-    # fallback: no signal section found -> just one chunk
     return [report_text.strip()]
 
 
 def merge_refined_chunks(chunks: list[str]) -> str:
-    return "\n\n".join([c.strip() for c in chunks if c and c.strip()]).strip()
+    merged = "\n\n".join([c.strip() for c in chunks if c and c.strip()]).strip()
 
+    # Ensure single title only
+    merged = re.sub(r"(?m)^(# Final Report\s*\n)+", "# Final Report\n\n", merged)
 
-# =========================================================
-# OPTIONAL CLEANUP
-# =========================================================
-def clean_refined_chunk(text: str) -> str:
-    # remove accidental duplicated title if model re-adds it inside chunk 2
-    text = re.sub(r"(?m)^# Final Report\s*\n?", "", text).strip()
+    if not merged.startswith("# Final Report"):
+        merged = "# Final Report\n\n" + merged
 
-    # fix common heading typo
-    text = text.replace("## Visualization", "## Visualization Insights")
-
-    return text.strip()
+    return merged.strip()
 
 
 # =========================================================
 # PUBLIC API
 # =========================================================
-def refine_report_chunk(chunk_text: str, max_new_tokens: int = 420) -> str:
+def refine_report_chunk(chunk_text: str, max_new_tokens: int = 320) -> str:
     """
     Refine a single report chunk.
+    Safe fallback if model output is malformed.
     """
     try:
-        prompt = build_refinement_prompt(chunk_text)
-        refined = _generate_refinement(prompt, max_new_tokens=max_new_tokens)
+        refined = _generate_refinement(chunk_text, max_new_tokens=max_new_tokens)
         refined = clean_refined_chunk(refined)
+
+        # Safety fallback if output is too weak / malformed
+        if len(refined.strip()) < 80:
+            print("[FineTuned Service] Refined chunk too short. Falling back to original chunk.")
+            return chunk_text
+
         return refined
-    except Exception as e:
+
+    except Exception:
         print("[FineTuned Service] CHUNK REFINEMENT ERROR:")
         traceback.print_exc()
         return chunk_text  # safe fallback
@@ -205,24 +271,24 @@ def refine_full_report_chunked(report_text: str) -> str:
         refined_chunks = []
         for i, chunk in enumerate(chunks):
             print(f"[FineTuned Service] Refining chunk {i+1}/{len(chunks)}...")
-            refined_chunk = refine_report_chunk(chunk, max_new_tokens=420)
+            refined_chunk = refine_report_chunk(chunk, max_new_tokens=320)
             refined_chunks.append(refined_chunk)
 
         final_refined = merge_refined_chunks(refined_chunks)
-
-        # ensure title exists
-        if not final_refined.startswith("# Final Report"):
-            final_refined = "# Final Report\n\n" + final_refined
-
         return final_refined.strip()
 
-    except Exception as e:
+    except Exception:
         print("[FineTuned Service] FULL REPORT REFINEMENT ERROR:")
         traceback.print_exc()
         return report_text  # safe fallback
-def query_finetuned_model(prompt: str, max_new_tokens: int = 420) -> str:
+
+
+# =========================================================
+# BACKWARD-COMPAT WRAPPER (optional safety)
+# =========================================================
+def query_finetuned_model(prompt: str, max_new_tokens: int = 320) -> str:
     """
-    Backward-compatible wrapper for older node imports.
-    Uses single-chunk refinement.
+    Backward-compatible wrapper for any legacy imports.
+    Treats the incoming prompt as a chunk and refines it.
     """
     return refine_report_chunk(prompt, max_new_tokens=max_new_tokens)

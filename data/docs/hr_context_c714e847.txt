@@ -1,0 +1,16 @@
+This dataset is related to employee attrition and workforce analytics.
+
+Business goals:
+- Understand why employees leave
+- Identify factors influencing attrition
+- Detect class imbalance in attrition
+- Evaluate salary, overtime, satisfaction, and job role effects
+- Assess whether the dataset is suitable for attrition prediction
+
+Important analytical focus:
+- Attrition as target variable
+- Employee satisfaction and work-life balance
+- Overtime and job involvement
+- Salary and years at company
+- Department and job role distribution
+- Feature importance for attrition prediction

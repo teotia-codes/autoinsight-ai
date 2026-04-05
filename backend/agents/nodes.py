@@ -317,6 +317,9 @@ Return a concise, evidence-grounded verification report in markdown.
 # ============================================================
 # 10. Final Report Node (SAFE FALLBACK ADDED)
 # ============================================================
+# ============================================================
+# 10. Final Report Node (DRAFT REPORT ONLY)
+# ============================================================
 def final_report_node(state: AgentState) -> AgentState:
     target = state.get("target_validation_structured", {})
     dq = state.get("data_quality_structured", {})
@@ -335,7 +338,7 @@ def final_report_node(state: AgentState) -> AgentState:
     ) if visualizations else "- No visualizations generated"
 
     # ============================================================
-    # STEP 1: Qwen (Ollama) creates the primary report
+    # STEP 1: Qwen (Ollama) creates the PRIMARY DRAFT REPORT ONLY
     # ============================================================
     base_prompt = f"""
 You are a senior data analyst writing a polished executive analytics report.
@@ -413,7 +416,7 @@ IMPORTANT RULES:
     try:
         response = llm.invoke(base_prompt)
         base_report = response.content.strip()
-        print("[final_report_node] Ollama Qwen base report succeeded.")
+        print("[final_report_node] Ollama Qwen draft report succeeded.")
     except Exception as e:
         print(f"[final_report_node] Ollama failed: {e}")
         base_report = None
@@ -456,37 +459,9 @@ IMPORTANT RULES:
 ## Conclusion
 - Analysis completed with safeguards; results remain usable but should be reviewed.
 """
-        return state
-
-    # ============================================================
-    # STEP 2: Fine-tuned model refines the Qwen report
-    # ============================================================
-    refine_prompt = f"""
-You are a fine-tuned executive analytics report refiner.
-
-Your task:
-- Improve clarity
-- Improve executive tone
-- Make the report more concise and polished
-- Preserve all factual meaning
-- Do NOT add new claims
-- Do NOT remove section headings
-- Keep markdown structure intact
-
-Here is the draft report:
-
-{base_report}
-
-Return ONLY the improved markdown report.
-"""
-
-    refined_report = query_finetuned_model(refine_prompt, max_new_tokens=320)
-
-    if refined_report.startswith("[Fine-tuned model error]") or len(refined_report.strip()) < 200:
-        print("[final_report_node] Fine-tuned refinement failed or too short. Using Qwen base report.")
-        state["final_report"] = base_report
     else:
-        print("[final_report_node] Fine-tuned refinement succeeded.")
-        state["final_report"] = refined_report
+        # IMPORTANT: final_report here is the DRAFT ONLY.
+        # main.py will refine it afterward using the fine-tuned chunked refiner.
+        state["final_report"] = base_report
 
     return state

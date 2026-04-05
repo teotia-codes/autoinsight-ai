@@ -15,7 +15,14 @@ from backend.services.ollama_service import query_ollama
 from backend.rag.ingest import ingest_document_to_chroma
 from backend.rag.retrieve import retrieve_relevant_context
 from backend.agents.graph import build_agent_graph
-from backend.services.finetuned_service import load_finetuned_model, refine_full_report_chunked
+
+# Optional fine-tuned refinement (disabled by default for low-memory laptops)
+ENABLE_FINETUNED_REFINEMENT = os.getenv("ENABLE_FINETUNED_REFINEMENT", "false").lower() == "true"
+
+if ENABLE_FINETUNED_REFINEMENT:
+    from backend.services.finetuned_service import load_finetuned_model, refine_full_report_chunked
+
+
 # ============================================================
 # App Setup
 # ============================================================
@@ -121,7 +128,8 @@ def cleanup_old_context_dirs(keep_latest: int = 2):
 def root():
     return {
         "message": "AutoInsight AI backend is running",
-        "model": OLLAMA_MODEL
+        "model": OLLAMA_MODEL,
+        "fine_tuned_refinement_enabled": ENABLE_FINETUNED_REFINEMENT
     }
 
 
@@ -237,7 +245,7 @@ Task:
 
 
 # ============================================================
-# Agentic Analysis (Phase 5)
+# Agentic Analysis (Stable Mode by Default)
 # ============================================================
 @app.post("/agentic-analysis")
 async def agentic_analysis(request: AskRequest):
@@ -287,16 +295,22 @@ async def agentic_analysis(request: AskRequest):
 
         result = graph.invoke(initial_state)
 
-        # ============================================================
-        # Fine-tuned chunked refinement (safe fallback)
-        # ============================================================
         draft_report = result.get("final_report", "")
+        final_report = draft_report
 
-        if draft_report and draft_report.strip():
-            print("[Agentic Analysis] Running chunked fine-tuned refinement...")
-            refined_report = refine_full_report_chunked(draft_report)
+        # ============================================================
+        # Optional fine-tuned refinement (disabled by default)
+        # ============================================================
+        if ENABLE_FINETUNED_REFINEMENT and draft_report and draft_report.strip():
+            try:
+                print("[Agentic Analysis] Fine-tuned refinement enabled. Running chunked refinement...")
+                final_report = refine_full_report_chunked(draft_report)
+            except Exception:
+                print("[Agentic Analysis] Fine-tuned refinement failed. Falling back to draft report.")
+                print(traceback.format_exc())
+                final_report = draft_report
         else:
-            refined_report = draft_report
+            print("[Agentic Analysis] Stable mode enabled: skipping fine-tuned refinement.")
 
         return {
             "message": "Agentic analysis completed successfully",
@@ -326,20 +340,29 @@ async def agentic_analysis(request: AskRequest):
             "verifier_output": result.get("verifier_output", ""),
 
             "draft_report": draft_report,
-            "final_report": refined_report,
+            "final_report": final_report,
         }
 
     except Exception as e:
         print("AGENTIC ANALYSIS ERROR:\n", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Agentic analysis failed: {str(e)}")
+
+
 # ============================================================
-# Startup: preload fine-tuned model once
+# Startup
 # ============================================================
 @app.on_event("startup")
 async def preload_models():
     try:
-        print("[Startup] Preloading fine-tuned model...")
-        load_finetuned_model()
-        print("[Startup] Fine-tuned model preloaded successfully.")
+        print("[Startup] AutoInsight backend starting...")
+        print(f"[Startup] Ollama model configured: {OLLAMA_MODEL}")
+
+        if ENABLE_FINETUNED_REFINEMENT:
+            print("[Startup] Fine-tuned refinement is ENABLED. Preloading model...")
+            load_finetuned_model()
+            print("[Startup] Fine-tuned model preloaded successfully.")
+        else:
+            print("[Startup] Fine-tuned refinement is DISABLED (stable mode).")
+
     except Exception as e:
-        print(f"[Startup] Fine-tuned model preload failed: {e}")
+        print(f"[Startup] Optional model preload failed: {e}")

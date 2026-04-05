@@ -10,3 +10,7 @@ data/vectorstore/*
 !data/uploads/.gitkeep
 !data/processed/.gitkeep
 !data/vectorstore/.gitkeep
+aes.pyc
+build_dataset_from_folders.py
+generate_aligned_report_dataset.py
+training_data
