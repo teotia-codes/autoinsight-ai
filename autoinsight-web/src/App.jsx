@@ -1,128 +1,468 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { uploadDoc, uploadCsv, runAgenticAnalysis } from "./api/autoInsightApi";
-import "./index.css";
+import { uploadDoc, uploadCsv, runAgenticAnalysis, getStaticUrl } from "./api/autoInsightApi";
+import "./App.css";
+
+const TABS = [
+  "Final Report",
+  "Planner",
+  "Target Validation",
+  "Data Quality",
+  "KPIs",
+  "Signal Ranking",
+  "Visualizations",
+  "ML Readiness",
+  "Verifier",
+];
 
 function App() {
   const [docFile, setDocFile] = useState(null);
   const [csvFile, setCsvFile] = useState(null);
+
+  const [docResult, setDocResult] = useState(null);
+  const [csvResult, setCsvResult] = useState(null);
+  const [analysisResult, setAnalysisResult] = useState(null);
+
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState("Idle");
+  const [loadingText, setLoadingText] = useState("Processing...");
   const [error, setError] = useState("");
-  const [result, setResult] = useState(null);
 
-  const handleAnalyze = async () => {
-    if (!docFile || !csvFile) {
-      setError("Please select both a supporting context document and a CSV file.");
-      return;
-    }
+  const [activeTab, setActiveTab] = useState("Final Report");
+  const [selectedChart, setSelectedChart] = useState(null);
 
-    setLoading(true);
-    setError("");
-    setResult(null);
+  const summaryStats = useMemo(() => {
+    if (!csvResult?.dataset_profile) return [];
 
+    const profile = csvResult.dataset_profile;
+
+    return [
+      { label: "Rows", value: profile.rows ?? "—" },
+      { label: "Columns", value: profile.columns ?? "—" },
+      { label: "Missing Cells", value: profile.total_missing ?? "—" },
+      { label: "Duplicate Rows", value: profile.duplicate_rows ?? "—" },
+    ];
+  }, [csvResult]);
+
+  const handleDocUpload = async () => {
+    if (!docFile) return;
     try {
-      setStatus("Uploading supporting context document...");
-      const docRes = await uploadDoc(docFile);
-      console.log("Document upload response:", docRes);
-
-      setStatus("Uploading CSV dataset...");
-      const csvRes = await uploadCsv(csvFile);
-      console.log("CSV upload response:", csvRes);
-
-      setStatus("Running agentic analysis...");
-
-      // ✅ THIS IS THE CORRECT PAYLOAD FOR YOUR BACKEND
-      const analysisPayload = {
-        file_path: csvRes.file_path,
-        filename: csvRes.filename,
-        summary_text: csvRes.summary_text,
-      };
-
-      console.log("Agentic analysis payload:", analysisPayload);
-
-      const analysisRes = await runAgenticAnalysis(analysisPayload);
-      console.log("Agentic analysis response:", analysisRes);
-
-      setResult(analysisRes);
-      setStatus("Analysis complete.");
+      setError("");
+      setLoading(true);
+      setLoadingText("Uploading context document...");
+      const result = await uploadDoc(docFile);
+      setDocResult(result);
     } catch (err) {
-      console.error("AutoInsight error:", err);
-      setError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          "Something went wrong while running AutoInsight."
-      );
-      setStatus("Failed.");
+      setError(err?.response?.data?.detail || "Failed to upload document.");
     } finally {
       setLoading(false);
     }
   };
 
-  const finalReport =
-    result?.final_report ||
-    result?.report ||
-    result?.result?.final_report ||
-    "No final report found in response.";
+  const handleCsvUpload = async () => {
+    if (!csvFile) return;
+    try {
+      setError("");
+      setLoading(true);
+      setLoadingText("Uploading CSV dataset...");
+      const result = await uploadCsv(csvFile);
+      setCsvResult(result);
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Failed to upload CSV.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRunAnalysis = async () => {
+    if (!csvResult?.file_path) {
+      setError("Please upload a CSV file first.");
+      return;
+    }
+
+    try {
+      setError("");
+      setLoading(true);
+      setLoadingText("Running agentic analysis... This may take a little time.");
+
+      const result = await runAgenticAnalysis({
+        file_path: csvResult.file_path,
+        filename: csvResult.filename,
+        summary_text: csvResult.summary_text,
+      });
+
+      console.log("Agentic analysis result:", result); // helpful for debugging chart paths
+      setAnalysisResult(result);
+      setActiveTab("Final Report");
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Agentic analysis failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderTabContent = () => {
+    if (!analysisResult) return null;
+
+    switch (activeTab) {
+      case "Planner":
+        return <MarkdownBlock content={analysisResult.planner_output} />;
+
+      case "Target Validation":
+        return <PlainTextBlock content={analysisResult.target_validation_output} />;
+
+      case "Data Quality":
+        return <PlainTextBlock content={analysisResult.data_quality_output} />;
+
+      case "KPIs":
+        return (
+          <div className="stack-gap">
+            <KpiPreview data={analysisResult.kpi_structured} />
+            <PlainTextBlock content={analysisResult.kpi_output} />
+          </div>
+        );
+
+      case "Signal Ranking":
+        return <PlainTextBlock content={analysisResult.signal_ranking_output} />;
+
+      case "Visualizations":
+        return (
+          <div className="stack-gap">
+            <PlainTextBlock content={analysisResult.visualization_summary} />
+            <ChartGallery
+              chartPaths={analysisResult.chart_paths || []}
+              onChartClick={setSelectedChart}
+            />
+          </div>
+        );
+
+      case "ML Readiness":
+        return <PlainTextBlock content={analysisResult.ml_readiness_output} />;
+
+      case "Verifier":
+        return <MarkdownBlock content={analysisResult.verifier_output} />;
+
+      case "Final Report":
+        return <MarkdownBlock content={analysisResult.final_report} />;
+
+      default:
+        return null;
+    }
+  };
 
   return (
-    <div className="app">
-      <div className="container">
-        <h1>AutoInsight AI</h1>
-        <p className="subtitle">
-          Autonomous business-aware analytics using RAG, agentic workflows, and AI-generated reporting.
-        </p>
+    <div className="app-shell">
+      {loading && <LoadingOverlay text={loadingText} />}
 
-        <div className="card">
-          <label>Supporting Context Document (.txt or .md)</label>
-          <input
-            type="file"
-            accept=".txt,.md"
-            onChange={(e) => setDocFile(e.target.files[0])}
-          />
-          {docFile && <p className="file-name">Selected: {docFile.name}</p>}
+      {selectedChart && (
+        <ChartModal imageUrl={selectedChart} onClose={() => setSelectedChart(null)} />
+      )}
+
+      <header className="hero">
+        <div className="container hero-inner">
+          <div>
+            <p className="eyebrow">AI-Powered Analytics Platform</p>
+            <h1 className="brand-title">AutoInsight AI</h1>
+            <p className="brand-subtitle">
+              Upload business context + CSV data to generate autonomous analytics,
+              KPI insights, visualizations, ML-readiness checks, and executive reports.
+            </p>
+          </div>
+
+          <div className="hero-badge-card">
+            <div className="hero-badge">
+              <span className="hero-dot"></span>
+              {analysisResult ? "Analysis Ready" : "Ready to Analyze"}
+            </div>
+            <div className="hero-mini-grid">
+              <MiniStat label="Model" value="Qwen + Agents" />
+              <MiniStat label="Mode" value="Stable" />
+              <MiniStat label="Frontend" value="React" />
+              <MiniStat label="Backend" value="FastAPI" />
+            </div>
+          </div>
         </div>
+      </header>
 
-        <div className="card">
-          <label>CSV Dataset</label>
-          <input
-            type="file"
-            accept=".csv"
-            onChange={(e) => setCsvFile(e.target.files[0])}
-          />
-          {csvFile && <p className="file-name">Selected: {csvFile.name}</p>}
-        </div>
-
-        <button onClick={handleAnalyze} disabled={loading}>
-          {loading ? "Analyzing..." : "Run Agentic Analysis"}
-        </button>
-
-        <div className="status-box">
-          <strong>Status:</strong> {status}
-        </div>
-
+      <main className="container main-content">
         {error && (
-          <div className="error-box">
+          <div className="alert alert-error">
             <strong>Error:</strong> {error}
           </div>
         )}
 
-        {result && (
-          <div className="results">
-            <div className="card">
-              <h2>Raw API Response</h2>
-              <pre>{JSON.stringify(result, null, 2)}</pre>
+        <div className="upload-grid">
+          <UploadCard
+            title="1. Upload Context Document"
+            subtitle="Optional but recommended for better domain-aware analysis"
+            file={docFile}
+            accept=".txt,.md"
+            onChange={(e) => setDocFile(e.target.files?.[0] || null)}
+            buttonLabel="Choose Context File"
+            actionLabel="Upload Context"
+            actionClass="btn-secondary"
+            onAction={handleDocUpload}
+            disabled={!docFile || loading}
+            successText={docResult ? `Uploaded: ${docResult.filename}` : ""}
+          />
+
+          <UploadCard
+            title="2. Upload CSV Dataset"
+            subtitle="Upload the structured dataset you want AutoInsight to analyze"
+            file={csvFile}
+            accept=".csv"
+            onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+            buttonLabel="Choose CSV File"
+            actionLabel="Upload CSV"
+            actionClass="btn-success"
+            onAction={handleCsvUpload}
+            disabled={!csvFile || loading}
+            successText={csvResult ? `Uploaded: ${csvResult.filename}` : ""}
+          />
+        </div>
+
+        <div className="action-panel">
+          <div>
+            <h3 className="action-title">3. Run Full Agentic Analysis</h3>
+            <p className="action-subtitle">
+              Generates planner output, data quality insights, KPIs, visualizations,
+              ML-readiness assessment, and a final executive report.
+            </p>
+          </div>
+
+          <button
+            className="btn btn-primary btn-large"
+            onClick={handleRunAnalysis}
+            disabled={!csvResult || loading}
+          >
+            Run Agentic Analysis
+          </button>
+        </div>
+
+        {csvResult && (
+          <>
+            <section className="section-card">
+              <div className="section-header">
+                <div>
+                  <p className="section-eyebrow">Dataset Overview</p>
+                  <h2 className="section-title">Dataset Summary</h2>
+                </div>
+                <div className="file-chip">{csvResult.filename}</div>
+              </div>
+
+              {summaryStats.length > 0 && (
+                <div className="stats-grid">
+                  {summaryStats.map((item) => (
+                    <div className="stat-card" key={item.label}>
+                      <p className="stat-label">{item.label}</p>
+                      <p className="stat-value">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <PlainTextBlock content={csvResult.summary_text} />
+            </section>
+          </>
+        )}
+
+        {analysisResult && (
+          <>
+            <section className="section-card">
+              <div className="section-header">
+                <div>
+                  <p className="section-eyebrow">AI Results</p>
+                  <h2 className="section-title">Analysis Workspace</h2>
+                </div>
+                <div className="analysis-chip">
+                  Charts: {(analysisResult.chart_paths || []).length}
+                </div>
+              </div>
+
+              <div className="tabs">
+                {TABS.map((tab) => (
+                  <button
+                    key={tab}
+                    className={`tab-btn ${activeTab === tab ? "active" : ""}`}
+                    onClick={() => setActiveTab(tab)}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+
+              {renderTabContent()}
+            </section>
+
+            {(analysisResult.chart_paths || []).length > 0 && (
+              <section className="section-card">
+                <div className="section-header">
+                  <div>
+                    <p className="section-eyebrow">Visual Intelligence</p>
+                    <h2 className="section-title">Generated Charts</h2>
+                  </div>
+                </div>
+
+                <ChartGallery
+                  chartPaths={analysisResult.chart_paths || []}
+                  onChartClick={setSelectedChart}
+                />
+              </section>
+            )}
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function UploadCard({
+  title,
+  subtitle,
+  file,
+  accept,
+  onChange,
+  buttonLabel,
+  actionLabel,
+  actionClass,
+  onAction,
+  disabled,
+  successText,
+}) {
+  return (
+    <div className="upload-card">
+      <div>
+        <h2 className="card-title">{title}</h2>
+        <p className="card-subtitle">{subtitle}</p>
+      </div>
+
+      <label className="file-btn">
+        {buttonLabel}
+        <input type="file" accept={accept} onChange={onChange} hidden />
+      </label>
+
+      {file && <p className="file-name">Selected: {file.name}</p>}
+      {successText && <p className="success-inline">{successText}</p>}
+
+      <button className={`btn ${actionClass}`} onClick={onAction} disabled={disabled}>
+        {actionLabel}
+      </button>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }) {
+  return (
+    <div className="mini-stat">
+      <p className="mini-stat-label">{label}</p>
+      <p className="mini-stat-value">{value}</p>
+    </div>
+  );
+}
+
+function KpiPreview({ data }) {
+  if (!data || typeof data !== "object") return null;
+
+  const entries = Object.entries(data).slice(0, 4);
+
+  if (!entries.length) return null;
+
+  return (
+    <div className="stats-grid">
+      {entries.map(([key, value]) => (
+        <div className="stat-card" key={key}>
+          <p className="stat-label">{formatKey(key)}</p>
+          <p className="stat-value small">{String(value)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PlainTextBlock({ content }) {
+  return (
+    <div className="content-box">
+      <pre className="plain-text">{content || "No content available."}</pre>
+    </div>
+  );
+}
+
+function MarkdownBlock({ content }) {
+  return (
+    <div className="content-box markdown-box">
+      <ReactMarkdown>{content || "No content available."}</ReactMarkdown>
+    </div>
+  );
+}
+
+function ChartGallery({ chartPaths, onChartClick }) {
+  if (!chartPaths.length) {
+    return <div className="content-box empty-box">No charts generated.</div>;
+  }
+
+  return (
+    <div className="chart-grid">
+      {chartPaths.map((path, index) => {
+        const imageUrl = getStaticUrl(path);
+
+        return (
+          <div key={index} className="chart-card">
+            <div className="chart-top">
+              <span className="chart-badge">Chart {index + 1}</span>
             </div>
 
-            <div className="card markdown-card">
-              <h2>Final Report</h2>
-              <ReactMarkdown>{finalReport}</ReactMarkdown>
+            <img
+              src={imageUrl}
+              alt={`Chart ${index + 1}`}
+              className="chart-image"
+              onClick={() => onChartClick(imageUrl)}
+              onError={(e) => {
+                console.error("Chart failed to load:", path, imageUrl);
+                e.currentTarget.style.display = "none";
+              }}
+            />
+
+            <div className="chart-footer">
+              <p className="chart-path">{path}</p>
+              <button className="btn btn-ghost" onClick={() => onChartClick(imageUrl)}>
+                Preview
+              </button>
             </div>
           </div>
-        )}
+        );
+      })}
+    </div>
+  );
+}
+
+function ChartModal({ imageUrl, onClose }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Chart Preview</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <img src={imageUrl} alt="Chart Preview" className="modal-image" />
       </div>
     </div>
   );
+}
+
+function LoadingOverlay({ text }) {
+  return (
+    <div className="loading-overlay">
+      <div className="loading-box">
+        <div className="spinner"></div>
+        <p>{text}</p>
+      </div>
+    </div>
+  );
+}
+
+function formatKey(key) {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export default App;
