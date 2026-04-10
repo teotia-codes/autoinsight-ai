@@ -1,24 +1,116 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env files / secrets
+.env
+.env.*
+!.env.example
+
+# =========================
+# Node / React / Vite
+# =========================
+node_modules/
+dist/
+build/
+.vite/
+
 # Logs
-logs
-*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# =========================
+# Project runtime data
+# =========================
+data/uploads/
+data/charts/
+data/outputs/
+data/temp/
+data/cache/
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+# If you store generated reports locally
+reports/
+outputs/
+
+# =========================
+# Vector DB / RAG storage
+# =========================
+chroma_db/
+vectorstore/
+faiss_index/
+backend/chroma_db/
+backend/vectorstore/
+
+# =========================
+# Model artifacts (VERY IMPORTANT)
+# =========================
+models/
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.onnx
+
+# If you want to keep only a placeholder folder:
+!models/.gitkeep
+
+# =========================
+# Local IDE files
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Temporary / cache
+# =========================
+*.tmp
+*.temp
+.cache/
+
+# =========================
+# Generated images / plots
+# =========================
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# BUT keep frontend public assets if needed:
+!frontend/public/*.png
+!frontend/public/*.jpg
+!frontend/public/*.jpeg
+!frontend/public/*.webp
+
+# =========================
+# CSV / TXT samples (optional)
+# Uncomment if your datasets are large and not needed
+# =========================
+# *.csv
+# *.txt
+# *.pdf

@@ -30,18 +30,17 @@ def get_current_context_dir() -> str | None:
 
     return None
 
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
 
-def retrieve_relevant_context(query: str, k: int = 4) -> str:
-    """
-    Retrieve relevant context only from the currently active context vectorstore.
-    """
-    persist_directory = get_current_context_dir()
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-    if not persist_directory:
-        return "No context document available."
-
+def retrieve_relevant_context(query: str, k: int = 3, persist_directory: str = None) -> str:
     try:
-        embeddings = get_embedding_model()
+        if not persist_directory:
+            persist_directory = "./data/vectorstore"
+
+        embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
 
         vectordb = Chroma(
             persist_directory=persist_directory,
@@ -51,9 +50,10 @@ def retrieve_relevant_context(query: str, k: int = 4) -> str:
         docs = vectordb.similarity_search(query, k=k)
 
         if not docs:
-            return "No relevant context found."
+            return ""
 
-        return "\n\n".join([doc.page_content for doc in docs])
+        return "\n\n".join([d.page_content for d in docs])
 
     except Exception as e:
-        return f"Context retrieval failed: {str(e)}"
+        print(f"[retrieve_relevant_context] Error: {e}")
+        return ""

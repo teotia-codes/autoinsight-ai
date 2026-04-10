@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { uploadDoc, uploadCsv, runAgenticAnalysis, getStaticUrl } from "./api/autoInsightApi";
+import {
+  uploadDoc,
+  uploadCsv,
+  runAgenticAnalysisStream,
+  getStaticUrl,
+} from "./api/autoInsightApi";
 import "./App.css";
 
 const TABS = [
@@ -15,6 +20,21 @@ const TABS = [
   "Verifier",
 ];
 
+const PIPELINE_ORDER = [
+  "initializing",
+  "planner",
+  "tool_analysis",
+  "target_validation",
+  "data_quality",
+  "kpi",
+  "signal_ranking",
+  "visualization_tool",
+  "ml_readiness",
+  "verifier",
+  "final_report",
+  "refinement",
+];
+
 function App() {
   const [docFile, setDocFile] = useState(null);
   const [csvFile, setCsvFile] = useState(null);
@@ -23,6 +43,8 @@ function App() {
   const [csvResult, setCsvResult] = useState(null);
   const [analysisResult, setAnalysisResult] = useState(null);
 
+  const [contextDir, setContextDir] = useState(null);
+
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState("Processing...");
   const [error, setError] = useState("");
@@ -30,46 +52,86 @@ function App() {
   const [activeTab, setActiveTab] = useState("Final Report");
   const [selectedChart, setSelectedChart] = useState(null);
 
-  const summaryStats = useMemo(() => {
-    if (!csvResult?.dataset_profile) return [];
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [progressSteps, setProgressSteps] = useState([]);
 
-    const profile = csvResult.dataset_profile;
+  const summaryStats = useMemo(() => {
+    if (!csvResult?.summary_text) return [];
+
+    const summary = csvResult.summary_text;
+
+    const rowsMatch = summary.match(/Dataset contains\s+(\d+)\s+rows/i);
+    const colsMatch = summary.match(/and\s+(\d+)\s+columns/i);
+    const missingMatch = summary.match(/No missing values detected/i);
+
+    let duplicateRows = "—";
+    const dupMatch = summary.match(/Duplicate rows\s*:\s*(\d+)/i);
+
+    if (dupMatch) {
+      duplicateRows = dupMatch[1];
+    }
 
     return [
-      { label: "Rows", value: profile.rows ?? "—" },
-      { label: "Columns", value: profile.columns ?? "—" },
-      { label: "Missing Cells", value: profile.total_missing ?? "—" },
-      { label: "Duplicate Rows", value: profile.duplicate_rows ?? "—" },
+      { label: "Rows", value: rowsMatch ? formatNumber(rowsMatch[1]) : "—" },
+      { label: "Columns", value: colsMatch ? colsMatch[1] : "—" },
+      { label: "Missing Values", value: missingMatch ? "0" : "Check" },
+      { label: "Duplicate Rows", value: duplicateRows },
     ];
   }, [csvResult]);
 
+  const orderedProgressSteps = useMemo(() => {
+    return [...progressSteps].sort((a, b) => {
+      const aIndex = PIPELINE_ORDER.indexOf(a.step);
+      const bIndex = PIPELINE_ORDER.indexOf(b.step);
+      return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex);
+    });
+  }, [progressSteps]);
+
+  const completedSteps = useMemo(() => {
+    return orderedProgressSteps.filter((step) => step.status === "completed").length;
+  }, [orderedProgressSteps]);
+
+  const totalTrackedSteps = PIPELINE_ORDER.length;
+
+  const progressPercent = useMemo(() => {
+    return Math.round((completedSteps / totalTrackedSteps) * 100);
+  }, [completedSteps]);
+
   const handleDocUpload = async () => {
     if (!docFile) return;
+
     try {
       setError("");
       setLoading(true);
       setLoadingText("Uploading context document...");
+
       const result = await uploadDoc(docFile);
+
       setDocResult(result);
+      setContextDir(result?.context_dir || null);
     } catch (err) {
       setError(err?.response?.data?.detail || "Failed to upload document.");
     } finally {
       setLoading(false);
+      setLoadingText("Processing...");
     }
   };
 
   const handleCsvUpload = async () => {
     if (!csvFile) return;
+
     try {
       setError("");
       setLoading(true);
       setLoadingText("Uploading CSV dataset...");
+
       const result = await uploadCsv(csvFile);
       setCsvResult(result);
     } catch (err) {
       setError(err?.response?.data?.detail || "Failed to upload CSV.");
     } finally {
       setLoading(false);
+      setLoadingText("Processing...");
     }
   };
 
@@ -82,21 +144,60 @@ function App() {
     try {
       setError("");
       setLoading(true);
-      setLoadingText("Running agentic analysis... This may take a little time.");
+      setIsStreaming(true);
+      setLoadingText("Starting agentic analysis...");
+      setProgressSteps([]);
+      setAnalysisResult(null);
+      setActiveTab("Final Report");
 
-      const result = await runAgenticAnalysis({
+      const payload = {
         file_path: csvResult.file_path,
         filename: csvResult.filename,
         summary_text: csvResult.summary_text,
-      });
+        context_dir: contextDir || null,
+      };
 
-      console.log("Agentic analysis result:", result); // helpful for debugging chart paths
-      setAnalysisResult(result);
-      setActiveTab("Final Report");
+      await runAgenticAnalysisStream(payload, {
+        onProgress: (event) => {
+          setLoadingText(event?.message || "Running agentic analysis...");
+
+          setProgressSteps((prev) => {
+            const existingIndex = prev.findIndex((item) => item.step === event.step);
+
+            if (existingIndex !== -1) {
+              const updated = [...prev];
+              updated[existingIndex] = {
+                ...updated[existingIndex],
+                ...event,
+              };
+              return updated;
+            }
+
+            return [...prev, event];
+          });
+        },
+        onDone: (result) => {
+          console.log("Streaming agentic analysis result:", result);
+          setAnalysisResult(result);
+          setActiveTab("Final Report");
+          setIsStreaming(false);
+          setLoading(false);
+          setLoadingText("Processing...");
+        },
+        onError: (err) => {
+          console.error("Streaming analysis error:", err);
+          setError(err?.message || "Agentic analysis failed.");
+          setIsStreaming(false);
+          setLoading(false);
+          setLoadingText("Processing...");
+        },
+      });
     } catch (err) {
-      setError(err?.response?.data?.detail || "Agentic analysis failed.");
-    } finally {
+      console.error("Agentic analysis failed:", err);
+      setError(err?.message || "Agentic analysis failed.");
+      setIsStreaming(false);
       setLoading(false);
+      setLoadingText("Processing...");
     }
   };
 
@@ -151,7 +252,7 @@ function App() {
 
   return (
     <div className="app-shell">
-      {loading && <LoadingOverlay text={loadingText} />}
+      {loading && !isStreaming && <LoadingOverlay text={loadingText} />}
 
       {selectedChart && (
         <ChartModal imageUrl={selectedChart} onClose={() => setSelectedChart(null)} />
@@ -159,25 +260,30 @@ function App() {
 
       <header className="hero">
         <div className="container hero-inner">
-          <div>
-            <p className="eyebrow">AI-Powered Analytics Platform</p>
+          <div className="hero-left">
+            <p className="eyebrow">AI-Powered Analytics Workspace</p>
             <h1 className="brand-title">AutoInsight AI</h1>
             <p className="brand-subtitle">
-              Upload business context + CSV data to generate autonomous analytics,
-              KPI insights, visualizations, ML-readiness checks, and executive reports.
+              Autonomous analytics, KPI extraction, visualization generation,
+              ML-readiness checks, and executive report creation from your datasets.
             </p>
           </div>
 
           <div className="hero-badge-card">
             <div className="hero-badge">
               <span className="hero-dot"></span>
-              {analysisResult ? "Analysis Ready" : "Ready to Analyze"}
+              {analysisResult
+                ? "Analysis Completed"
+                : isStreaming
+                ? "Analysis Running"
+                : "System Ready"}
             </div>
+
             <div className="hero-mini-grid">
               <MiniStat label="Model" value="Qwen + Agents" />
-              <MiniStat label="Mode" value="Stable" />
-              <MiniStat label="Frontend" value="React" />
               <MiniStat label="Backend" value="FastAPI" />
+              <MiniStat label="Frontend" value="React" />
+              <MiniStat label="Mode" value={isStreaming ? "Streaming" : "Stable"} />
             </div>
           </div>
         </div>
@@ -190,79 +296,152 @@ function App() {
           </div>
         )}
 
-        <div className="upload-grid">
-          <UploadCard
-            title="1. Upload Context Document"
-            subtitle="Optional but recommended for better domain-aware analysis"
-            file={docFile}
-            accept=".txt,.md"
-            onChange={(e) => setDocFile(e.target.files?.[0] || null)}
-            buttonLabel="Choose Context File"
-            actionLabel="Upload Context"
-            actionClass="btn-secondary"
-            onAction={handleDocUpload}
-            disabled={!docFile || loading}
-            successText={docResult ? `Uploaded: ${docResult.filename}` : ""}
-          />
+        <section className="upload-section">
+          <div className="upload-grid">
+            <UploadCard
+              title="Upload Context Document"
+              subtitle="Optional business/domain knowledge for more relevant analysis"
+              file={docFile}
+              accept=".txt,.md"
+              onChange={(e) => setDocFile(e.target.files?.[0] || null)}
+              buttonLabel="Choose Context File"
+              actionLabel="Upload Context"
+              actionClass="btn-secondary"
+              onAction={handleDocUpload}
+              disabled={!docFile || loading}
+              successText={
+                docResult
+                  ? `Uploaded: ${docResult.filename}${contextDir ? " • Context Indexed" : ""}`
+                  : ""
+              }
+            />
 
-          <UploadCard
-            title="2. Upload CSV Dataset"
-            subtitle="Upload the structured dataset you want AutoInsight to analyze"
-            file={csvFile}
-            accept=".csv"
-            onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
-            buttonLabel="Choose CSV File"
-            actionLabel="Upload CSV"
-            actionClass="btn-success"
-            onAction={handleCsvUpload}
-            disabled={!csvFile || loading}
-            successText={csvResult ? `Uploaded: ${csvResult.filename}` : ""}
-          />
-        </div>
-
-        <div className="action-panel">
-          <div>
-            <h3 className="action-title">3. Run Full Agentic Analysis</h3>
-            <p className="action-subtitle">
-              Generates planner output, data quality insights, KPIs, visualizations,
-              ML-readiness assessment, and a final executive report.
-            </p>
+            <UploadCard
+              title="Upload CSV Dataset"
+              subtitle="Upload the structured dataset you want AutoInsight to analyze"
+              file={csvFile}
+              accept=".csv"
+              onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
+              buttonLabel="Choose CSV File"
+              actionLabel="Upload CSV"
+              actionClass="btn-success"
+              onAction={handleCsvUpload}
+              disabled={!csvFile || loading}
+              successText={csvResult ? `Uploaded: ${csvResult.filename}` : ""}
+            />
           </div>
 
-          <button
-            className="btn btn-primary btn-large"
-            onClick={handleRunAnalysis}
-            disabled={!csvResult || loading}
-          >
-            Run Agentic Analysis
-          </button>
-        </div>
+          <div className="action-panel">
+            <div>
+              <h3 className="action-title">Run Full Agentic Analysis</h3>
+              <p className="action-subtitle">
+                Generate insights, KPIs, charts, ML-readiness checks, and a polished final report.
+              </p>
+            </div>
+
+            <button
+              className="btn btn-primary btn-large"
+              onClick={handleRunAnalysis}
+              disabled={!csvResult || loading}
+            >
+              {isStreaming ? "Running Analysis..." : "Run Analysis"}
+            </button>
+          </div>
+        </section>
+
+        {isStreaming && (
+          <section className="section-card progress-section">
+            <div className="section-header">
+              <div>
+                <p className="section-eyebrow">Live Pipeline Status</p>
+                <h2 className="section-title">Analysis Progress</h2>
+              </div>
+              <div className="analysis-chip">
+                {completedSteps}/{totalTrackedSteps} Done
+              </div>
+            </div>
+
+            <p className="progress-subtitle">
+              AutoInsight is running your multi-agent analytics pipeline step-by-step...
+            </p>
+
+            <div className="progress-bar-wrap">
+              <div className="progress-bar-track">
+                <div
+                  className="progress-bar-fill"
+                  style={{ width: `${progressPercent}%` }}
+                ></div>
+              </div>
+              <span className="progress-bar-label">{progressPercent}%</span>
+            </div>
+
+            <div className="progress-list">
+              {PIPELINE_ORDER.map((stepName) => {
+                const step = orderedProgressSteps.find((item) => item.step === stepName);
+
+                let status = "pending";
+                let message = "Waiting...";
+
+                if (step) {
+                  status = step.status || "pending";
+                  message =
+                    step.message ||
+                    (status === "completed"
+                      ? "Completed"
+                      : status === "started"
+                      ? "Running..."
+                      : "Waiting...");
+                }
+
+                return (
+                  <div key={stepName} className={`progress-item ${status}`}>
+                    <div className="progress-left">
+                      <span className="progress-dot"></span>
+                      <div className="progress-texts">
+                        <span className="progress-step-name">
+                          {formatStepName(stepName)}
+                        </span>
+                        <span className="progress-step-message">{message}</span>
+                      </div>
+                    </div>
+
+                    <span className={`progress-status ${status}`}>
+                      {status === "started"
+                        ? "Running"
+                        : status === "completed"
+                        ? "Completed"
+                        : status === "error"
+                        ? "Failed"
+                        : "Pending"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {csvResult && (
-          <>
-            <section className="section-card">
-              <div className="section-header">
-                <div>
-                  <p className="section-eyebrow">Dataset Overview</p>
-                  <h2 className="section-title">Dataset Summary</h2>
-                </div>
-                <div className="file-chip">{csvResult.filename}</div>
+          <section className="section-card">
+            <div className="section-header">
+              <div>
+                <p className="section-eyebrow">Dataset Overview</p>
+                <h2 className="section-title">Dataset Summary</h2>
               </div>
+              <div className="file-chip">{csvResult.filename}</div>
+            </div>
 
-              {summaryStats.length > 0 && (
-                <div className="stats-grid">
-                  {summaryStats.map((item) => (
-                    <div className="stat-card" key={item.label}>
-                      <p className="stat-label">{item.label}</p>
-                      <p className="stat-value">{item.value}</p>
-                    </div>
-                  ))}
+            <div className="stats-grid">
+              {summaryStats.map((item) => (
+                <div className="stat-card" key={item.label}>
+                  <p className="stat-label">{item.label}</p>
+                  <p className="stat-value">{item.value}</p>
                 </div>
-              )}
+              ))}
+            </div>
 
-              <PlainTextBlock content={csvResult.summary_text} />
-            </section>
-          </>
+            <SummaryPanel summaryText={csvResult.summary_text} />
+          </section>
         )}
 
         {analysisResult && (
@@ -359,11 +538,28 @@ function MiniStat({ label, value }) {
   );
 }
 
+function SummaryPanel({ summaryText }) {
+  const lines = (summaryText || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return (
+    <div className="summary-panel">
+      {lines.map((line, idx) => (
+        <div key={idx} className="summary-line">
+          <span className="summary-dot"></span>
+          <span>{line}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function KpiPreview({ data }) {
   if (!data || typeof data !== "object") return null;
 
   const entries = Object.entries(data).slice(0, 4);
-
   if (!entries.length) return null;
 
   return (
@@ -460,7 +656,16 @@ function LoadingOverlay({ text }) {
 }
 
 function formatKey(key) {
-  return key
+  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatNumber(value) {
+  return Number(value).toLocaleString();
+}
+
+function formatStepName(step) {
+  if (!step) return "Unknown Step";
+  return step
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }

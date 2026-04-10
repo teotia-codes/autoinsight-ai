@@ -19,9 +19,12 @@ os.makedirs(CHART_DIR, exist_ok=True)
 # ============================================================
 # Helpers
 # ============================================================
-def _safe_chart_path(prefix: str) -> str:
+def _safe_chart_path(prefix: str, output_dir: str = None) -> str:
+    base_dir = output_dir or CHART_DIR
+    os.makedirs(base_dir, exist_ok=True)
+
     filename = f"{prefix}_{uuid.uuid4().hex[:8]}.png"
-    return os.path.join(CHART_DIR, filename)
+    return os.path.join(base_dir, filename)
 
 
 def _save_current_plot(path: str):
@@ -49,7 +52,7 @@ def _get_continuous_numeric_columns(df: pd.DataFrame):
 # ============================================================
 # Chart Generators
 # ============================================================
-def create_histogram(df: pd.DataFrame, column: str):
+def create_histogram(df: pd.DataFrame, column: str, output_dir: str = None):
     if column not in df.columns:
         return None
 
@@ -57,7 +60,7 @@ def create_histogram(df: pd.DataFrame, column: str):
     if series.empty:
         return None
 
-    path = _safe_chart_path(f"hist_{column}")
+    path = _safe_chart_path(f"hist_{column}", output_dir)
 
     plt.figure(figsize=(8, 5))
     plt.hist(series, bins=20)
@@ -81,7 +84,7 @@ def create_histogram(df: pd.DataFrame, column: str):
     }
 
 
-def create_boxplot(df: pd.DataFrame, column: str):
+def create_boxplot(df: pd.DataFrame, column: str, output_dir: str = None):
     if column not in df.columns:
         return None
 
@@ -89,7 +92,7 @@ def create_boxplot(df: pd.DataFrame, column: str):
     if series.empty:
         return None
 
-    path = _safe_chart_path(f"box_{column}")
+    path = _safe_chart_path(f"box_{column}", output_dir)
 
     plt.figure(figsize=(8, 5))
     plt.boxplot(series, vert=True)
@@ -112,7 +115,7 @@ def create_boxplot(df: pd.DataFrame, column: str):
     }
 
 
-def create_bar_chart(df: pd.DataFrame, column: str, top_n: int = 10):
+def create_bar_chart(df: pd.DataFrame, column: str, top_n: int = 10, output_dir: str = None):
     if column not in df.columns:
         return None
 
@@ -120,7 +123,7 @@ def create_bar_chart(df: pd.DataFrame, column: str, top_n: int = 10):
     if counts.empty:
         return None
 
-    path = _safe_chart_path(f"bar_{column}")
+    path = _safe_chart_path(f"bar_{column}", output_dir)
 
     plt.figure(figsize=(10, 5))
     counts.plot(kind="bar")
@@ -145,7 +148,7 @@ def create_bar_chart(df: pd.DataFrame, column: str, top_n: int = 10):
     }
 
 
-def create_scatter_plot(df: pd.DataFrame, x_col: str, y_col: str):
+def create_scatter_plot(df: pd.DataFrame, x_col: str, y_col: str, output_dir: str = None):
     if x_col not in df.columns or y_col not in df.columns:
         return None
 
@@ -153,7 +156,7 @@ def create_scatter_plot(df: pd.DataFrame, x_col: str, y_col: str):
     if plot_df.empty:
         return None
 
-    path = _safe_chart_path(f"scatter_{x_col}_{y_col}")
+    path = _safe_chart_path(f"scatter_{x_col}_{y_col}", output_dir)
 
     plt.figure(figsize=(8, 5))
     plt.scatter(plot_df[x_col], plot_df[y_col], alpha=0.6)
@@ -180,8 +183,8 @@ def create_scatter_plot(df: pd.DataFrame, x_col: str, y_col: str):
 # ============================================================
 # Main Autonomous Visualization Engine (UPDATED)
 # ============================================================
-def generate_recommended_visualizations(file_path: str, analysis_result: dict):
-    df = safe_read_csv(file_path)  # IMPORTANT: use same smart preprocessing
+def generate_recommended_visualizations(file_path, analysis_result, output_dir=None):
+    df = safe_read_csv(file_path)
     visualizations = []
 
     column_info = analysis_result.get("column_types", {})
@@ -207,7 +210,7 @@ def generate_recommended_visualizations(file_path: str, analysis_result: dict):
     # 1. Histogram
     hist_col = continuous_numeric_cols[0] if continuous_numeric_cols else (numeric_cols[0] if numeric_cols else None)
     if hist_col:
-        hist_viz = create_histogram(df, hist_col)
+        hist_viz = create_histogram(df, hist_col, output_dir)
         if hist_viz:
             visualizations.append(hist_viz)
 
@@ -222,13 +225,13 @@ def generate_recommended_visualizations(file_path: str, analysis_result: dict):
         box_col = hist_col
 
     if box_col:
-        box_viz = create_boxplot(df, box_col)
+        box_viz = create_boxplot(df, box_col, output_dir)
         if box_viz:
             visualizations.append(box_viz)
 
     # 3. Bar chart
     if categorical_cols:
-        bar_viz = create_bar_chart(df, categorical_cols[0], top_n=10)
+        bar_viz = create_bar_chart(df, categorical_cols[0], top_n=10, output_dir=output_dir)
         if bar_viz:
             visualizations.append(bar_viz)
 
@@ -239,7 +242,7 @@ def generate_recommended_visualizations(file_path: str, analysis_result: dict):
         y_col = pair.get("col2")
 
         if x_col in numeric_cols and y_col in numeric_cols and x_col != y_col:
-            scatter_viz = create_scatter_plot(df, x_col, y_col)
+            scatter_viz = create_scatter_plot(df, x_col, y_col, output_dir)
             if scatter_viz:
                 visualizations.append(scatter_viz)
                 break
@@ -249,7 +252,7 @@ def generate_recommended_visualizations(file_path: str, analysis_result: dict):
         corr = df[numeric_cols].corr()
 
         if corr.shape[0] >= 2:
-            path = _safe_chart_path("heatmap_corr")
+            path = _safe_chart_path("heatmap_corr", output_dir)
 
             plt.figure(figsize=(10, 8))
             plt.imshow(corr, aspect="auto")
@@ -280,7 +283,7 @@ def generate_recommended_visualizations(file_path: str, analysis_result: dict):
 
         if not already_used_as_single_col:
             if target_col in numeric_cols:
-                target_hist = create_histogram(df, target_col)
+                target_hist = create_histogram(df, target_col, output_dir)
                 if target_hist:
                     target_hist["title"] = f"Target Distribution: {target_col}"
                     target_hist["interpretation"] = (
@@ -290,7 +293,7 @@ def generate_recommended_visualizations(file_path: str, analysis_result: dict):
                     visualizations.append(target_hist)
             else:
                 if df[target_col].nunique(dropna=True) <= 20:
-                    target_bar = create_bar_chart(df, target_col, top_n=10)
+                    target_bar = create_bar_chart(df, target_col, top_n=10, output_dir=output_dir)
                     if target_bar:
                         target_bar["title"] = f"Target Class Distribution: {target_col}"
                         target_bar["interpretation"] = (

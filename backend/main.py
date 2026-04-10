@@ -1,20 +1,34 @@
 import os
 import uuid
 import shutil
+import json
 import traceback
+import asyncio
 from datetime import datetime
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 
 from backend.models import AskRequest
 from backend.utils import save_upload_file, get_csv_summary, generate_dataset_profile
 from backend.config import OLLAMA_MODEL
-from backend.services.ollama_service import query_ollama
 from backend.rag.ingest import ingest_document_to_chroma
 from backend.rag.retrieve import retrieve_relevant_context
 from backend.agents.graph import build_agent_graph
+from backend.agents.nodes import (
+    planner_node,
+    tool_analysis_node,
+    target_validation_node,
+    data_quality_node,
+    kpi_node,
+    signal_ranking_node,
+    visualization_tool_node,
+    ml_readiness_node,
+    verifier_node,
+    final_report_node,
+)
 
 # Optional fine-tuned refinement (disabled by default for low-memory laptops)
 ENABLE_FINETUNED_REFINEMENT = os.getenv("ENABLE_FINETUNED_REFINEMENT", "false").lower() == "true"
@@ -43,24 +57,24 @@ UPLOAD_DIR = os.path.join("data", "uploads")
 DOCS_DIR = os.path.join("data", "docs")
 VECTORSTORE_ROOT = os.path.join("data", "vectorstore")
 PROCESSED_DIR = os.path.join("data", "processed")
-CURRENT_CONTEXT_FILE = os.path.join(VECTORSTORE_ROOT, "current_context.txt")
+CHARTS_ROOT = os.path.join(PROCESSED_DIR, "charts")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DOCS_DIR, exist_ok=True)
 os.makedirs(VECTORSTORE_ROOT, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
+os.makedirs(CHARTS_ROOT, exist_ok=True)
 
-# Serve static files (important for charts/images later)
+# Serve static files
 app.mount("/static", StaticFiles(directory="data"), name="static")
 
 
 # ============================================================
-# Windows-Safe Context Management
+# Helpers
 # ============================================================
 def create_new_context_dir() -> str:
     """
     Create a fresh unique vectorstore directory for each uploaded context.
-    This avoids Windows file-lock issues with Chroma.
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_id = uuid.uuid4().hex[:8]
@@ -69,28 +83,7 @@ def create_new_context_dir() -> str:
     return context_dir
 
 
-def set_current_context_dir(path: str):
-    os.makedirs(VECTORSTORE_ROOT, exist_ok=True)
-    with open(CURRENT_CONTEXT_FILE, "w", encoding="utf-8") as f:
-        f.write(path)
-
-
-def get_current_context_dir() -> str | None:
-    if not os.path.exists(CURRENT_CONTEXT_FILE):
-        return None
-
-    try:
-        with open(CURRENT_CONTEXT_FILE, "r", encoding="utf-8") as f:
-            path = f.read().strip()
-            if path and os.path.exists(path):
-                return path
-    except Exception:
-        return None
-
-    return None
-
-
-def cleanup_old_context_dirs(keep_latest: int = 2):
+def cleanup_old_context_dirs(keep_latest: int = 5):
     """
     Best-effort cleanup of old context dirs.
     Safe on Windows: failures are ignored.
@@ -105,20 +98,103 @@ def cleanup_old_context_dirs(keep_latest: int = 2):
             if os.path.isdir(full_path) and name.startswith("context_"):
                 entries.append(full_path)
 
-        # Sort by modified time (newest first)
         entries.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-
         to_delete = entries[keep_latest:]
 
         for old_dir in to_delete:
             try:
                 shutil.rmtree(old_dir, ignore_errors=True)
             except Exception:
-                # Ignore locked folders on Windows
                 pass
 
     except Exception:
         pass
+
+
+def create_chart_output_dir(session_id: str) -> str:
+    chart_dir = os.path.join(CHARTS_ROOT, session_id)
+    os.makedirs(chart_dir, exist_ok=True)
+    return chart_dir
+
+
+def normalize_chart_paths(chart_paths: list[str]) -> list[str]:
+    """
+    Convert local paths into /static URLs if possible.
+    """
+    normalized = []
+
+    for path in chart_paths:
+        if not path:
+            continue
+
+        path_fixed = path.replace("\\", "/")
+        if path_fixed.startswith("data/"):
+            normalized.append("/static/" + path_fixed[len("data/"):])
+        else:
+            normalized.append(path_fixed)
+
+    return normalized
+
+
+def build_initial_state(request: AskRequest, retrieved_context: str, session_id: str, chart_output_dir: str):
+    return {
+        "session_id": session_id,
+        "chart_output_dir": chart_output_dir,
+        "context_dir": request.context_dir,
+
+        "filename": request.filename or os.path.basename(request.file_path),
+        "file_path": request.file_path,
+        "summary_text": request.summary_text or "",
+        "retrieved_context": retrieved_context,
+
+        "planner_output": "",
+
+        "tool_analysis_result": {},
+        "tool_analysis_text": "",
+
+        "target_validation_output": "",
+        "target_validation_structured": {},
+
+        "data_quality_output": "",
+        "data_quality_structured": {},
+
+        "kpi_output": "",
+        "kpi_structured": {},
+
+        "signal_ranking_output": "",
+        "signal_ranking_structured": {},
+
+        "visualizations": [],
+        "chart_paths": [],
+        "visualization_summary": "",
+
+        "ml_readiness_output": "",
+        "ml_readiness_structured": {},
+
+        "verifier_output": "",
+        "final_report": "",
+    }
+
+
+def maybe_refine_report(draft_report: str) -> str:
+    final_report = draft_report
+
+    if ENABLE_FINETUNED_REFINEMENT and draft_report and draft_report.strip():
+        try:
+            print("[Agentic Analysis] Fine-tuned refinement enabled. Running chunked refinement...")
+            final_report = refine_full_report_chunked(draft_report)
+        except Exception:
+            print("[Agentic Analysis] Fine-tuned refinement failed. Falling back to draft report.")
+            print(traceback.format_exc())
+            final_report = draft_report
+    else:
+        print("[Agentic Analysis] Stable mode enabled: skipping fine-tuned refinement.")
+
+    return final_report
+
+
+def sse_event(event_type: str, data: dict) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
 # ============================================================
@@ -161,7 +237,7 @@ async def upload_csv(file: UploadFile = File(...)):
 
 
 # ============================================================
-# Upload Context Document (Windows-safe)
+# Upload Context Document (request-safe)
 # ============================================================
 @app.post("/upload-doc")
 async def upload_doc(file: UploadFile = File(...)):
@@ -169,29 +245,22 @@ async def upload_doc(file: UploadFile = File(...)):
         if not (file.filename.lower().endswith(".txt") or file.filename.lower().endswith(".md")):
             raise HTTPException(status_code=400, detail="Only .txt or .md files are supported for context.")
 
-        # Save doc file
         file_path = save_upload_file(file, DOCS_DIR)
 
-        # Create a brand new isolated vectorstore directory
         new_context_dir = create_new_context_dir()
 
-        # Ingest into this dedicated directory
         ingest_result = ingest_document_to_chroma(
             file_path=file_path,
             persist_directory=new_context_dir
         )
 
-        # Mark this as the active context
-        set_current_context_dir(new_context_dir)
-
-        # Best-effort cleanup of older inactive contexts
-        cleanup_old_context_dirs(keep_latest=2)
+        cleanup_old_context_dirs(keep_latest=5)
 
         return {
             "message": "Context document uploaded and indexed successfully",
             "filename": os.path.basename(file_path),
             "file_path": file_path,
-            "active_context_dir": new_context_dir,
+            "context_dir": new_context_dir,  # IMPORTANT: frontend should store this
             "chunks_ingested": ingest_result.get("chunks_ingested", 0),
         }
 
@@ -209,9 +278,21 @@ async def dataset_insight(request: AskRequest):
         summary_text = request.summary_text or ""
         filename = request.filename or "uploaded_dataset.csv"
 
-        retrieved_context = retrieve_relevant_context(
-            query=f"Provide domain context and analytical guidance for dataset: {filename}"
-        )
+        try:
+            if request.context_dir:
+                retrieved_context = retrieve_relevant_context(
+                    query=f"Provide domain context and analytical guidance for dataset: {filename}",
+                    persist_directory=request.context_dir
+                )
+            else:
+                retrieved_context = retrieve_relevant_context(
+                    query=f"Provide domain context and analytical guidance for dataset: {filename}"
+                )
+        except TypeError:
+            # Backward compatibility if retrieve_relevant_context doesn't yet accept persist_directory
+            retrieved_context = retrieve_relevant_context(
+                query=f"Provide domain context and analytical guidance for dataset: {filename}"
+            )
 
         prompt = f"""
 You are an expert data analyst AI.
@@ -232,6 +313,7 @@ Task:
 - Keep it practical and concise
 """
 
+        from backend.services.ollama_service import query_ollama
         answer = query_ollama(prompt)
 
         return {
@@ -245,7 +327,7 @@ Task:
 
 
 # ============================================================
-# Agentic Analysis (Stable Mode by Default)
+# Legacy Agentic Analysis (still supported)
 # ============================================================
 @app.post("/agentic-analysis")
 async def agentic_analysis(request: AskRequest):
@@ -253,70 +335,47 @@ async def agentic_analysis(request: AskRequest):
         if not request.file_path:
             raise HTTPException(status_code=400, detail="file_path is required for agentic analysis.")
 
-        graph = build_agent_graph()
+        session_id = str(uuid.uuid4())
+        chart_output_dir = create_chart_output_dir(session_id)
 
-        retrieved_context = retrieve_relevant_context(
-            query=f"Provide domain-specific analytical guidance for dataset: {request.filename or 'dataset'}"
+        try:
+            if request.context_dir:
+                retrieved_context = retrieve_relevant_context(
+                    query=f"Provide domain-specific analytical guidance for dataset: {request.filename or 'dataset'}",
+                    persist_directory=request.context_dir
+                )
+            else:
+                retrieved_context = retrieve_relevant_context(
+                    query=f"Provide domain-specific analytical guidance for dataset: {request.filename or 'dataset'}"
+                )
+        except TypeError:
+            retrieved_context = retrieve_relevant_context(
+                query=f"Provide domain-specific analytical guidance for dataset: {request.filename or 'dataset'}"
+            )
+
+        initial_state = build_initial_state(
+            request=request,
+            retrieved_context=retrieved_context,
+            session_id=session_id,
+            chart_output_dir=chart_output_dir
         )
 
-        initial_state = {
-            "filename": request.filename or os.path.basename(request.file_path),
-            "file_path": request.file_path,
-            "summary_text": request.summary_text or "",
-            "retrieved_context": retrieved_context,
-
-            "planner_output": "",
-
-            "tool_analysis_result": {},
-            "tool_analysis_text": "",
-
-            "target_validation_output": "",
-            "target_validation_structured": {},
-
-            "data_quality_output": "",
-            "data_quality_structured": {},
-
-            "kpi_output": "",
-            "kpi_structured": {},
-
-            "signal_ranking_output": "",
-            "signal_ranking_structured": {},
-
-            "visualizations": [],
-            "chart_paths": [],
-            "visualization_summary": "",
-
-            "ml_readiness_output": "",
-            "ml_readiness_structured": {},
-
-            "verifier_output": "",
-            "final_report": "",
-        }
-
+        # Keep existing graph flow for non-streaming path
+        graph = build_agent_graph()
         result = graph.invoke(initial_state)
 
         draft_report = result.get("final_report", "")
-        final_report = draft_report
+        final_report = maybe_refine_report(draft_report)
 
-        # ============================================================
-        # Optional fine-tuned refinement (disabled by default)
-        # ============================================================
-        if ENABLE_FINETUNED_REFINEMENT and draft_report and draft_report.strip():
-            try:
-                print("[Agentic Analysis] Fine-tuned refinement enabled. Running chunked refinement...")
-                final_report = refine_full_report_chunked(draft_report)
-            except Exception:
-                print("[Agentic Analysis] Fine-tuned refinement failed. Falling back to draft report.")
-                print(traceback.format_exc())
-                final_report = draft_report
-        else:
-            print("[Agentic Analysis] Stable mode enabled: skipping fine-tuned refinement.")
+        normalized_chart_paths = normalize_chart_paths(result.get("chart_paths", []))
 
         return {
             "message": "Agentic analysis completed successfully",
+            "session_id": session_id,
 
             "planner_output": result.get("planner_output", ""),
             "tool_analysis_text": result.get("tool_analysis_text", ""),
+            "tool_analysis_result": result.get("tool_analysis_result", {}),
 
             "target_validation_output": result.get("target_validation_output", ""),
             "target_validation_structured": result.get("target_validation_structured", {}),
@@ -331,7 +390,7 @@ async def agentic_analysis(request: AskRequest):
             "signal_ranking_structured": result.get("signal_ranking_structured", {}),
 
             "visualizations": result.get("visualizations", []),
-            "chart_paths": result.get("chart_paths", []),
+            "chart_paths": normalized_chart_paths,
             "visualization_summary": result.get("visualization_summary", ""),
 
             "ml_readiness_output": result.get("ml_readiness_output", ""),
@@ -346,6 +405,152 @@ async def agentic_analysis(request: AskRequest):
     except Exception as e:
         print("AGENTIC ANALYSIS ERROR:\n", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Agentic analysis failed: {str(e)}")
+
+
+# ============================================================
+# NEW: Streaming Agentic Analysis (Phase 1 UX upgrade)
+# ============================================================
+@app.post("/agentic-analysis-stream")
+async def agentic_analysis_stream(request: AskRequest):
+    if not request.file_path:
+        raise HTTPException(status_code=400, detail="file_path is required for agentic analysis.")
+
+    async def event_generator():
+        session_id = str(uuid.uuid4())
+        chart_output_dir = create_chart_output_dir(session_id)
+
+        try:
+            yield sse_event("progress", {
+                "step": "initializing",
+                "status": "started",
+                "message": "Initializing analysis session...",
+                "session_id": session_id
+            })
+            await asyncio.sleep(0.05)
+
+            try:
+                if request.context_dir:
+                    retrieved_context = retrieve_relevant_context(
+                        query=f"Provide domain-specific analytical guidance for dataset: {request.filename or 'dataset'}",
+                        persist_directory=request.context_dir
+                    )
+                else:
+                    retrieved_context = retrieve_relevant_context(
+                        query=f"Provide domain-specific analytical guidance for dataset: {request.filename or 'dataset'}"
+                    )
+            except TypeError:
+                retrieved_context = retrieve_relevant_context(
+                    query=f"Provide domain-specific analytical guidance for dataset: {request.filename or 'dataset'}"
+                )
+
+            state = build_initial_state(
+                request=request,
+                retrieved_context=retrieved_context,
+                session_id=session_id,
+                chart_output_dir=chart_output_dir
+            )
+
+            steps = [
+                ("planner", planner_node),
+                ("tool_analysis", tool_analysis_node),
+                ("target_validation", target_validation_node),
+                ("data_quality", data_quality_node),
+                ("kpi", kpi_node),
+                ("signal_ranking", signal_ranking_node),
+                ("visualization_tool", visualization_tool_node),
+                ("ml_readiness", ml_readiness_node),
+                ("verifier", verifier_node),
+                ("final_report", final_report_node),
+            ]
+
+            for step_name, step_fn in steps:
+                yield sse_event("progress", {
+                    "step": step_name,
+                    "status": "started",
+                    "message": f"{step_name.replace('_', ' ').title()} started"
+                })
+                await asyncio.sleep(0.05)
+
+                # Run sync node safely in worker thread
+                state = await asyncio.to_thread(step_fn, state)
+
+                yield sse_event("progress", {
+                    "step": step_name,
+                    "status": "completed",
+                    "message": f"{step_name.replace('_', ' ').title()} completed"
+                })
+                await asyncio.sleep(0.05)
+
+            draft_report = state.get("final_report", "")
+
+            yield sse_event("progress", {
+                "step": "refinement",
+                "status": "started",
+                "message": "Refining final report..."
+            })
+            await asyncio.sleep(0.05)
+
+            final_report = await asyncio.to_thread(maybe_refine_report, draft_report)
+
+            yield sse_event("progress", {
+                "step": "refinement",
+                "status": "completed",
+                "message": "Final report ready"
+            })
+            await asyncio.sleep(0.05)
+
+            normalized_chart_paths = normalize_chart_paths(state.get("chart_paths", []))
+
+            final_payload = {
+                "message": "Agentic analysis completed successfully",
+                "session_id": session_id,
+
+                "planner_output": state.get("planner_output", ""),
+                "tool_analysis_text": state.get("tool_analysis_text", ""),
+                "tool_analysis_result": state.get("tool_analysis_result", {}),
+
+                "target_validation_output": state.get("target_validation_output", ""),
+                "target_validation_structured": state.get("target_validation_structured", {}),
+
+                "data_quality_output": state.get("data_quality_output", ""),
+                "data_quality_structured": state.get("data_quality_structured", {}),
+
+                "kpi_output": state.get("kpi_output", ""),
+                "kpi_structured": state.get("kpi_structured", {}),
+
+                "signal_ranking_output": state.get("signal_ranking_output", ""),
+                "signal_ranking_structured": state.get("signal_ranking_structured", {}),
+
+                "visualizations": state.get("visualizations", []),
+                "chart_paths": normalized_chart_paths,
+                "visualization_summary": state.get("visualization_summary", ""),
+
+                "ml_readiness_output": state.get("ml_readiness_output", ""),
+                "ml_readiness_structured": state.get("ml_readiness_structured", {}),
+
+                "verifier_output": state.get("verifier_output", ""),
+
+                "draft_report": draft_report,
+                "final_report": final_report,
+            }
+
+            yield sse_event("done", final_payload)
+
+        except Exception as e:
+            print("STREAMING AGENTIC ANALYSIS ERROR:\n", traceback.format_exc())
+            yield sse_event("error", {
+                "message": f"Agentic analysis failed: {str(e)}"
+            })
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 # ============================================================

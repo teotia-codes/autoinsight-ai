@@ -21,11 +21,34 @@ llm = ChatOllama(
     temperature=0.1
 )
 
+
+# ============================================================
+# Helper: retrieve context safely per request
+# ============================================================
+def get_context_for_state(state: AgentState, query: str, k: int = 3) -> str:
+    """
+    Retrieve context using request-specific context_dir if available.
+    Falls back gracefully if no context_dir is provided.
+    """
+    context_dir = state.get("context_dir")
+
+    try:
+        if context_dir:
+            return retrieve_relevant_context(query=query, k=k, persist_directory=context_dir)
+        return retrieve_relevant_context(query=query, k=k)
+    except TypeError:
+        # Backward compatibility if retrieve_relevant_context doesn't yet accept persist_directory
+        return retrieve_relevant_context(query=query, k=k)
+    except Exception as e:
+        print(f"[get_context_for_state] Context retrieval failed: {e}")
+        return ""
+
+
 # ============================================================
 # 1. Planner Node
 # ============================================================
 def planner_node(state: AgentState) -> AgentState:
-    context = retrieve_relevant_context(state["summary_text"], k=3)
+    context = get_context_for_state(state, state["summary_text"], k=3)
     state["retrieved_context"] = context
 
     prompt = f"""
@@ -188,10 +211,21 @@ def signal_ranking_node(state: AgentState) -> AgentState:
 def visualization_tool_node(state: AgentState) -> AgentState:
     analysis_result = state.get("tool_analysis_result", {})
 
-    visualizations = generate_recommended_visualizations(
-        file_path=state["file_path"],
-        analysis_result=analysis_result
-    )
+    # NEW: request-specific chart directory support
+    output_dir = state.get("chart_output_dir")
+
+    try:
+        visualizations = generate_recommended_visualizations(
+            file_path=state["file_path"],
+            analysis_result=analysis_result,
+            output_dir=output_dir
+        )
+    except TypeError:
+        # backward compatibility if your current function doesn't yet support output_dir
+        visualizations = generate_recommended_visualizations(
+            file_path=state["file_path"],
+            analysis_result=analysis_result
+        )
 
     chart_paths = [viz["path"] for viz in visualizations if "path" in viz]
 
@@ -227,7 +261,7 @@ def ml_readiness_node(state: AgentState) -> AgentState:
 
 
 # ============================================================
-# 9. Verifier Node (SAFE FALLBACK ADDED)
+# 9. Verifier Node
 # ============================================================
 def verifier_node(state: AgentState) -> AgentState:
     prompt = f"""
@@ -315,9 +349,6 @@ Return a concise, evidence-grounded verification report in markdown.
 
 
 # ============================================================
-# 10. Final Report Node (SAFE FALLBACK ADDED)
-# ============================================================
-# ============================================================
 # 10. Final Report Node (DRAFT REPORT ONLY)
 # ============================================================
 def final_report_node(state: AgentState) -> AgentState:
@@ -337,9 +368,6 @@ def final_report_node(state: AgentState) -> AgentState:
         [f"- {v.get('title', 'Untitled')}: {v.get('interpretation', 'No interpretation')}" for v in visualizations[:5]]
     ) if visualizations else "- No visualizations generated"
 
-    # ============================================================
-    # STEP 1: Qwen (Ollama) creates the PRIMARY DRAFT REPORT ONLY
-    # ============================================================
     base_prompt = f"""
 You are a senior data analyst writing a polished executive analytics report.
 
@@ -421,7 +449,6 @@ IMPORTANT RULES:
         print(f"[final_report_node] Ollama failed: {e}")
         base_report = None
 
-    # If Qwen failed, fallback hard
     if not base_report:
         state["final_report"] = """
 # Final Report
@@ -460,8 +487,6 @@ IMPORTANT RULES:
 - Analysis completed with safeguards; results remain usable but should be reviewed.
 """
     else:
-        # IMPORTANT: final_report here is the DRAFT ONLY.
-        # main.py will refine it afterward using the fine-tuned chunked refiner.
         state["final_report"] = base_report
 
     return state

@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-
+from pydantic import BaseModel
+from typing import Optional
 
 # ============================================================
 # Existing Models (kept for compatibility)
@@ -26,7 +27,11 @@ class DatasetSummaryResponse(BaseModel):
 # ============================================================
 # New Unified Request Model for dataset-insight + agentic-analysis
 # ============================================================
+
+
+
 class AskRequest(BaseModel):
+    file_path: str
     filename: Optional[str] = None
-    file_path: Optional[str] = None
     summary_text: Optional[str] = None
+    context_dir: Optional[str] = None
