@@ -49,7 +49,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+AGENT_GRAPH = build_agent_graph()
 # ============================================================
 # Paths
 # ============================================================
@@ -361,8 +361,7 @@ async def agentic_analysis(request: AskRequest):
         )
 
         # Keep existing graph flow for non-streaming path
-        graph = build_agent_graph()
-        result = graph.invoke(initial_state)
+        result = AGENT_GRAPH.invoke(initial_state)
 
         draft_report = result.get("final_report", "")
         final_report = maybe_refine_report(draft_report)
@@ -561,7 +560,7 @@ async def preload_models():
     try:
         print("[Startup] AutoInsight backend starting...")
         print(f"[Startup] Ollama model configured: {OLLAMA_MODEL}")
-
+        print("[Startup] Agent graph compiled and ready.")
         if ENABLE_FINETUNED_REFINEMENT:
             print("[Startup] Fine-tuned refinement is ENABLED. Preloading model...")
             load_finetuned_model()
