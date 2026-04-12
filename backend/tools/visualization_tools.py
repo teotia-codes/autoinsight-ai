@@ -1,10 +1,8 @@
-import matplotlib
-matplotlib.use("Agg")
-
 import os
 import uuid
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 
 from backend.tools.analysis_tools import safe_read_csv
 
@@ -27,12 +25,6 @@ def _safe_chart_path(prefix: str, output_dir: str = None) -> str:
     return os.path.join(base_dir, filename)
 
 
-def _save_current_plot(path: str):
-    plt.tight_layout()
-    plt.savefig(path, bbox_inches="tight")
-    plt.close()
-
-
 def _get_numeric_columns(df: pd.DataFrame):
     return df.select_dtypes(include=["number"]).columns.tolist()
 
@@ -49,8 +41,16 @@ def _get_continuous_numeric_columns(df: pd.DataFrame):
     return continuous
 
 
+import json
+from plotly.utils import PlotlyJSONEncoder
+
+def _fig_to_spec(fig):
+    # Converts Plotly figure into a fully JSON-safe plain dict
+    return json.loads(json.dumps(fig, cls=PlotlyJSONEncoder))
+
+
 # ============================================================
-# Chart Generators
+# Interactive Chart Generators (Plotly)
 # ============================================================
 def create_histogram(df: pd.DataFrame, column: str, output_dir: str = None):
     if column not in df.columns:
@@ -60,15 +60,12 @@ def create_histogram(df: pd.DataFrame, column: str, output_dir: str = None):
     if series.empty:
         return None
 
-    path = _safe_chart_path(f"hist_{column}", output_dir)
-
-    plt.figure(figsize=(8, 5))
-    plt.hist(series, bins=20)
-    plt.title(f"Distribution of {column}")
-    plt.xlabel(column)
-    plt.ylabel("Frequency")
-
-    _save_current_plot(path)
+    fig = px.histogram(
+        df,
+        x=column,
+        nbins=20,
+        title=f"Distribution of {column}"
+    )
 
     interpretation = (
         f"This histogram shows the distribution of '{column}'. "
@@ -79,7 +76,7 @@ def create_histogram(df: pd.DataFrame, column: str, output_dir: str = None):
         "title": f"Histogram: {column}",
         "chart_type": "histogram",
         "columns": [column],
-        "path": path,
+        "plotly_spec": _fig_to_spec(fig),
         "interpretation": interpretation,
     }
 
@@ -92,14 +89,12 @@ def create_boxplot(df: pd.DataFrame, column: str, output_dir: str = None):
     if series.empty:
         return None
 
-    path = _safe_chart_path(f"box_{column}", output_dir)
-
-    plt.figure(figsize=(8, 5))
-    plt.boxplot(series, vert=True)
-    plt.title(f"Boxplot of {column}")
-    plt.ylabel(column)
-
-    _save_current_plot(path)
+    fig = px.box(
+        df,
+        y=column,
+        title=f"Boxplot of {column}",
+        points="outliers"
+    )
 
     interpretation = (
         f"This boxplot highlights the spread of '{column}' and potential outliers. "
@@ -110,7 +105,7 @@ def create_boxplot(df: pd.DataFrame, column: str, output_dir: str = None):
         "title": f"Boxplot: {column}",
         "chart_type": "boxplot",
         "columns": [column],
-        "path": path,
+        "plotly_spec": _fig_to_spec(fig),
         "interpretation": interpretation,
     }
 
@@ -123,16 +118,17 @@ def create_bar_chart(df: pd.DataFrame, column: str, top_n: int = 10, output_dir:
     if counts.empty:
         return None
 
-    path = _safe_chart_path(f"bar_{column}", output_dir)
+    chart_df = counts.reset_index()
+    chart_df.columns = [column, "count"]
 
-    plt.figure(figsize=(10, 5))
-    counts.plot(kind="bar")
-    plt.title(f"Top {top_n} Categories in {column}")
-    plt.xlabel(column)
-    plt.ylabel("Count")
-    plt.xticks(rotation=45, ha="right")
+    fig = px.bar(
+        chart_df,
+        x=column,
+        y="count",
+        title=f"Top {top_n} Categories in {column}"
+    )
 
-    _save_current_plot(path)
+    fig.update_layout(xaxis_tickangle=-45)
 
     interpretation = (
         f"This bar chart shows the most frequent categories in '{column}'. "
@@ -143,7 +139,7 @@ def create_bar_chart(df: pd.DataFrame, column: str, top_n: int = 10, output_dir:
         "title": f"Bar Chart: {column}",
         "chart_type": "bar",
         "columns": [column],
-        "path": path,
+        "plotly_spec": _fig_to_spec(fig),
         "interpretation": interpretation,
     }
 
@@ -156,15 +152,13 @@ def create_scatter_plot(df: pd.DataFrame, x_col: str, y_col: str, output_dir: st
     if plot_df.empty:
         return None
 
-    path = _safe_chart_path(f"scatter_{x_col}_{y_col}", output_dir)
-
-    plt.figure(figsize=(8, 5))
-    plt.scatter(plot_df[x_col], plot_df[y_col], alpha=0.6)
-    plt.title(f"{x_col} vs {y_col}")
-    plt.xlabel(x_col)
-    plt.ylabel(y_col)
-
-    _save_current_plot(path)
+    fig = px.scatter(
+        plot_df,
+        x=x_col,
+        y=y_col,
+        title=f"{x_col} vs {y_col}",
+        opacity=0.7
+    )
 
     interpretation = (
         f"This scatter plot compares '{x_col}' and '{y_col}'. "
@@ -175,13 +169,49 @@ def create_scatter_plot(df: pd.DataFrame, x_col: str, y_col: str, output_dir: st
         "title": f"Scatter Plot: {x_col} vs {y_col}",
         "chart_type": "scatter",
         "columns": [x_col, y_col],
-        "path": path,
+        "plotly_spec": _fig_to_spec(fig),
         "interpretation": interpretation,
     }
 
 
+def create_correlation_heatmap(df: pd.DataFrame, numeric_cols, output_dir: str = None):
+    if len(numeric_cols) < 3:
+        return None
+
+    corr = df[numeric_cols].corr()
+    if corr.shape[0] < 2:
+        return None
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=corr.values,
+            x=corr.columns.tolist(),
+            y=corr.columns.tolist(),
+            colorscale="Viridis",
+            colorbar=dict(title="Correlation")
+        )
+    )
+
+    fig.update_layout(
+        title="Correlation Heatmap (Filtered Numeric Features)",
+        xaxis_title="Features",
+        yaxis_title="Features"
+    )
+
+    return {
+        "title": "Correlation Heatmap",
+        "chart_type": "heatmap",
+        "columns": corr.columns.tolist(),
+        "plotly_spec": _fig_to_spec(fig),
+        "interpretation": (
+            "This filtered correlation heatmap summarizes pairwise relationships across meaningful numeric features, "
+            "excluding identifier-like and constant columns."
+        ),
+    }
+
+
 # ============================================================
-# Main Autonomous Visualization Engine (UPDATED)
+# Main Autonomous Visualization Engine (PLOTLY VERSION)
 # ============================================================
 def generate_recommended_visualizations(file_path, analysis_result, output_dir=None):
     df = safe_read_csv(file_path)
@@ -247,32 +277,10 @@ def generate_recommended_visualizations(file_path, analysis_result, output_dir=N
                 visualizations.append(scatter_viz)
                 break
 
-    # 5. Filtered correlation heatmap
-    if len(numeric_cols) >= 3:
-        corr = df[numeric_cols].corr()
-
-        if corr.shape[0] >= 2:
-            path = _safe_chart_path("heatmap_corr", output_dir)
-
-            plt.figure(figsize=(10, 8))
-            plt.imshow(corr, aspect="auto")
-            plt.colorbar()
-            plt.xticks(range(len(corr.columns)), corr.columns, rotation=90)
-            plt.yticks(range(len(corr.columns)), corr.columns)
-            plt.title("Correlation Heatmap (Filtered Numeric Features)")
-
-            _save_current_plot(path)
-
-            visualizations.append({
-                "title": "Correlation Heatmap",
-                "chart_type": "heatmap",
-                "columns": corr.columns.tolist(),
-                "path": path,
-                "interpretation": (
-                    "This filtered correlation heatmap summarizes pairwise relationships across meaningful numeric features, "
-                    "excluding identifier-like and constant columns."
-                ),
-            })
+    # 5. Correlation heatmap
+    heatmap_viz = create_correlation_heatmap(df, numeric_cols, output_dir)
+    if heatmap_viz:
+        visualizations.append(heatmap_viz)
 
     # 6. Target-aware visualization
     target_info = analysis_result.get("target_analysis", {})

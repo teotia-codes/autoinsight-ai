@@ -227,10 +227,7 @@ def visualization_tool_node(state: AgentState) -> AgentState:
             analysis_result=analysis_result
         )
 
-    chart_paths = [viz["path"] for viz in visualizations if "path" in viz]
-
-    summary_lines = []
-    summary_lines.append("AUTONOMOUS VISUALIZATION AGENT REPORT")
+    summary_lines = ["AUTONOMOUS VISUALIZATION AGENT REPORT"]
 
     if visualizations:
         for viz in visualizations:
@@ -242,7 +239,7 @@ def visualization_tool_node(state: AgentState) -> AgentState:
         summary_lines.append("- No suitable visualizations generated.")
 
     state["visualizations"] = visualizations
-    state["chart_paths"] = chart_paths
+    state["chart_paths"] = []          # no longer used — plotly_spec is in visualizations
     state["visualization_summary"] = "\n".join(summary_lines)
     return state
 

@@ -33,7 +33,10 @@ export const runAgenticAnalysis = async (payload) => {
   return response.data;
 };
 
-export const runAgenticAnalysisStream = async (payload, { onProgress, onDone, onError }) => {
+export const runAgenticAnalysisStream = async (
+  payload,
+  { onProgress, onDone, onError }
+) => {
   try {
     const response = await fetch(`${API_BASE_URL}/agentic-analysis-stream`, {
       method: "POST",
@@ -52,8 +55,40 @@ export const runAgenticAnalysisStream = async (payload, { onProgress, onDone, on
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
 
+    const processChunk = (rawChunk) => {
+      const lines = rawChunk.split("\n");
+      let eventType = "message";
+      let dataLines = [];
+
+      for (const line of lines) {
+        if (line.startsWith("event:")) {
+          eventType = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+      }
+
+      const data = dataLines.join("\n");
+      if (!data) return;
+
+      try {
+        const parsed = JSON.parse(data);
+
+        if (eventType === "progress" && onProgress) {
+          onProgress(parsed);
+        } else if (eventType === "done" && onDone) {
+          onDone(parsed);
+        } else if (eventType === "error" && onError) {
+          onError(parsed);
+        }
+      } catch (parseErr) {
+        console.error("Failed to parse SSE event:", parseErr, { eventType, data });
+      }
+    };
+
     while (true) {
       const { value, done } = await reader.read();
+
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -62,32 +97,23 @@ export const runAgenticAnalysisStream = async (payload, { onProgress, onDone, on
       buffer = chunks.pop() || "";
 
       for (const chunk of chunks) {
-        const lines = chunk.split("\n");
-        let eventType = "message";
-        let data = "";
-
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            eventType = line.replace("event: ", "").trim();
-          } else if (line.startsWith("data: ")) {
-            data += line.replace("data: ", "");
-          }
+        if (chunk.trim()) {
+          processChunk(chunk);
         }
+      }
+    }
 
-        if (!data) continue;
+    // Flush any remaining buffered event
+    const flushed = decoder.decode();
+    if (flushed) {
+      buffer += flushed;
+    }
 
-        try {
-          const parsed = JSON.parse(data);
-
-          if (eventType === "progress" && onProgress) {
-            onProgress(parsed);
-          } else if (eventType === "done" && onDone) {
-            onDone(parsed);
-          } else if (eventType === "error" && onError) {
-            onError(parsed);
-          }
-        } catch (parseErr) {
-          console.error("Failed to parse SSE event:", parseErr, data);
+    if (buffer.trim()) {
+      const remainingChunks = buffer.split("\n\n");
+      for (const chunk of remainingChunks) {
+        if (chunk.trim()) {
+          processChunk(chunk);
         }
       }
     }

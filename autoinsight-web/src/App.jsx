@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   uploadDoc,
@@ -7,6 +7,7 @@ import {
   getStaticUrl,
 } from "./api/autoInsightApi";
 import "./App.css";
+
 
 const TABS = [
   "Final Report",
@@ -50,7 +51,6 @@ function App() {
   const [error, setError] = useState("");
 
   const [activeTab, setActiveTab] = useState("Final Report");
-  const [selectedChart, setSelectedChart] = useState(null);
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [progressSteps, setProgressSteps] = useState([]);
@@ -95,7 +95,7 @@ function App() {
 
   const progressPercent = useMemo(() => {
     return Math.round((completedSteps / totalTrackedSteps) * 100);
-  }, [completedSteps]);
+  }, [completedSteps, totalTrackedSteps]);
 
   const handleDocUpload = async () => {
     if (!docFile) return;
@@ -229,10 +229,7 @@ function App() {
         return (
           <div className="stack-gap">
             <PlainTextBlock content={analysisResult.visualization_summary} />
-            <ChartGallery
-              chartPaths={analysisResult.chart_paths || []}
-              onChartClick={setSelectedChart}
-            />
+            <PlotlyGallery visualizations={analysisResult.visualizations || []} />
           </div>
         );
 
@@ -253,10 +250,6 @@ function App() {
   return (
     <div className="app-shell">
       {loading && !isStreaming && <LoadingOverlay text={loadingText} />}
-
-      {selectedChart && (
-        <ChartModal imageUrl={selectedChart} onClose={() => setSelectedChart(null)} />
-      )}
 
       <header className="hero">
         <div className="container hero-inner">
@@ -453,7 +446,7 @@ function App() {
                   <h2 className="section-title">Analysis Workspace</h2>
                 </div>
                 <div className="analysis-chip">
-                  Charts: {(analysisResult.chart_paths || []).length}
+                  Charts: {Array.isArray(analysisResult.visualizations) ? analysisResult.visualizations.length : 0}
                 </div>
               </div>
 
@@ -472,19 +465,18 @@ function App() {
               {renderTabContent()}
             </section>
 
-            {(analysisResult.chart_paths || []).length > 0 && (
+            {Array.isArray(analysisResult.visualizations) && analysisResult.visualizations.length > 0 && (
               <section className="section-card">
                 <div className="section-header">
                   <div>
                     <p className="section-eyebrow">Visual Intelligence</p>
                     <h2 className="section-title">Generated Charts</h2>
                   </div>
+                  <div className="analysis-chip">
+                    Charts: {analysisResult.visualizations.length}
+                  </div>
                 </div>
-
-                <ChartGallery
-                  chartPaths={analysisResult.chart_paths || []}
-                  onChartClick={setSelectedChart}
-                />
+                <PlotlyGallery visualizations={analysisResult.visualizations} />
               </section>
             )}
           </>
@@ -590,56 +582,118 @@ function MarkdownBlock({ content }) {
   );
 }
 
-function ChartGallery({ chartPaths, onChartClick }) {
-  if (!chartPaths.length) {
+function SafePlot({ viz, fallbackTitle }) {
+  const containerRef = useRef(null);
+  const spec = viz?.plotly_spec;
+  const data = Array.isArray(spec?.data) ? spec.data : [];
+  const layout = spec?.layout && typeof spec.layout === "object" ? spec.layout : {};
+
+  useEffect(() => {
+    if (!containerRef.current || !data.length) return;
+
+    const render = (Plotly) => {
+      Plotly.newPlot(
+        containerRef.current,
+        data,
+        { ...layout, autosize: true },
+        {
+          responsive: true,
+          displayModeBar: true,
+          displaylogo: false,
+          modeBarButtonsToRemove: ["sendDataToCloud"],
+          toImageButtonOptions: { format: "png", filename: fallbackTitle || "chart" },
+        }
+      );
+    };
+
+    // Use already-loaded Plotly if available, otherwise load from CDN
+    if (window.Plotly) {
+      render(window.Plotly);
+    } else {
+      const script = document.createElement("script");
+      script.src = "https://cdn.plot.ly/plotly-2.35.2.min.js";
+      script.onload = () => render(window.Plotly);
+      document.head.appendChild(script);
+    }
+
+    return () => {
+      if (containerRef.current && window.Plotly) {
+        window.Plotly.purge(containerRef.current);
+      }
+    };
+  }, [viz]);
+
+  if (!data.length) {
+    return (
+      <div className="content-box empty-box" style={{ minHeight: "350px" }}>
+        No chart data available for {fallbackTitle}.
+      </div>
+    );
+  }
+
+  return <div ref={containerRef} style={{ width: "100%", minHeight: "350px" }} />;
+}
+
+function PlotlyGallery({ visualizations }) {
+  if (!Array.isArray(visualizations) || !visualizations.length) {
     return <div className="content-box empty-box">No charts generated.</div>;
   }
 
   return (
     <div className="chart-grid">
-      {chartPaths.map((path, index) => {
-        const imageUrl = getStaticUrl(path);
+      {visualizations.map((viz, index) => {
+        const spec = viz?.plotly_spec;
+        const hasPlotly =
+          spec &&
+          typeof spec === "object" &&
+          Array.isArray(spec.data) &&
+          spec.data.length > 0;
+
+        const imageUrl = viz?.path ? getStaticUrl(viz.path) : null;
 
         return (
           <div key={index} className="chart-card">
             <div className="chart-top">
-              <span className="chart-badge">Chart {index + 1}</span>
+              <span className="chart-badge">{viz.title || `Chart ${index + 1}`}</span>
             </div>
 
-            <img
-              src={imageUrl}
-              alt={`Chart ${index + 1}`}
-              className="chart-image"
-              onClick={() => onChartClick(imageUrl)}
-              onError={(e) => {
-                console.error("Chart failed to load:", path, imageUrl);
-                e.currentTarget.style.display = "none";
-              }}
-            />
+            {hasPlotly ? (
+              <SafePlot
+                viz={viz}
+                fallbackTitle={viz.title || `Chart ${index + 1}`}
+              />
+            ) : imageUrl ? (
+              <div className="chart-image-wrap">
+                <img
+                  src={imageUrl}
+                  alt={viz.title || `Chart ${index + 1}`}
+                  className="chart-image"
+                  style={{
+                    width: "100%",
+                    minHeight: "350px",
+                    objectFit: "contain",
+                    borderRadius: "12px",
+                  }}
+                  onError={(e) => {
+                    console.error("Failed to load chart image:", imageUrl);
+                    e.currentTarget.style.display = "none";
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="content-box empty-box" style={{ minHeight: "350px" }}>
+                Chart unavailable for this visualization.
+              </div>
+            )}
 
-            <div className="chart-footer">
-              <p className="chart-path">{path}</p>
-              <button className="btn btn-ghost" onClick={() => onChartClick(imageUrl)}>
-                Preview
-              </button>
-            </div>
+            {viz.interpretation && (
+              <div className="chart-footer">
+                <p className="chart-path">{viz.interpretation}</p>
+              </div>
+            )}
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function ChartModal({ imageUrl, onClose }) {
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>Chart Preview</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
-        <img src={imageUrl} alt="Chart Preview" className="modal-image" />
-      </div>
     </div>
   );
 }

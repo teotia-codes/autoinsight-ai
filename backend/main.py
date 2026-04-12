@@ -49,7 +49,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-AGENT_GRAPH = build_agent_graph()
+
 # ============================================================
 # Paths
 # ============================================================
@@ -117,23 +117,8 @@ def create_chart_output_dir(session_id: str) -> str:
     return chart_dir
 
 
-def normalize_chart_paths(chart_paths: list[str]) -> list[str]:
-    """
-    Convert local paths into /static URLs if possible.
-    """
-    normalized = []
-
-    for path in chart_paths:
-        if not path:
-            continue
-
-        path_fixed = path.replace("\\", "/")
-        if path_fixed.startswith("data/"):
-            normalized.append("/static/" + path_fixed[len("data/"):])
-        else:
-            normalized.append(path_fixed)
-
-    return normalized
+# normalize_chart_paths removed — charts are now Plotly JSON specs,
+# no static file paths are generated.
 
 
 def build_initial_state(request: AskRequest, retrieved_context: str, session_id: str, chart_output_dir: str):
@@ -193,10 +178,66 @@ def maybe_refine_report(draft_report: str) -> str:
     return final_report
 
 
+def make_json_safe(obj):
+    """
+    Recursively convert numpy/pandas/other non-JSON-safe objects
+    into plain Python types for SSE responses.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+
+    if obj is None:
+        return None
+
+    # Primitive types
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    # numpy scalar types
+    if np is not None and isinstance(obj, np.generic):
+        return obj.item()
+
+    # numpy arrays
+    if np is not None and isinstance(obj, np.ndarray):
+        return obj.tolist()
+
+    # dict
+    if isinstance(obj, dict):
+        return {str(k): make_json_safe(v) for k, v in obj.items()}
+
+    # list / tuple / set
+    if isinstance(obj, (list, tuple, set)):
+        return [make_json_safe(v) for v in obj]
+
+    # pandas objects fallback
+    try:
+        import pandas as pd
+        if isinstance(obj, pd.Series):
+            return obj.tolist()
+        if isinstance(obj, pd.Index):
+            return obj.tolist()
+        if isinstance(obj, pd.Timestamp):
+            return obj.isoformat()
+    except ImportError:
+        pass
+
+    # Plotly / objects with to_plotly_json
+    if hasattr(obj, "to_plotly_json"):
+        return make_json_safe(obj.to_plotly_json())
+
+    # Generic fallback
+    try:
+        json.dumps(obj)
+        return obj
+    except TypeError:
+        return str(obj)
+
+
 def sse_event(event_type: str, data: dict) -> str:
-    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-
-
+    safe_data = make_json_safe(data)
+    return f"event: {event_type}\ndata: {json.dumps(safe_data)}\n\n"
 # ============================================================
 # Health Check
 # ============================================================
@@ -361,12 +402,11 @@ async def agentic_analysis(request: AskRequest):
         )
 
         # Keep existing graph flow for non-streaming path
-        result = AGENT_GRAPH.invoke(initial_state)
+        graph = build_agent_graph()
+        result = graph.invoke(initial_state)
 
         draft_report = result.get("final_report", "")
         final_report = maybe_refine_report(draft_report)
-
-        normalized_chart_paths = normalize_chart_paths(result.get("chart_paths", []))
 
         return {
             "message": "Agentic analysis completed successfully",
@@ -389,7 +429,7 @@ async def agentic_analysis(request: AskRequest):
             "signal_ranking_structured": result.get("signal_ranking_structured", {}),
 
             "visualizations": result.get("visualizations", []),
-            "chart_paths": normalized_chart_paths,
+            "chart_paths": [],   # deprecated — plotly_spec is inside visualizations
             "visualization_summary": result.get("visualization_summary", ""),
 
             "ml_readiness_output": result.get("ml_readiness_output", ""),
@@ -498,7 +538,7 @@ async def agentic_analysis_stream(request: AskRequest):
             })
             await asyncio.sleep(0.05)
 
-            normalized_chart_paths = normalize_chart_paths(state.get("chart_paths", []))
+            normalized_chart_paths = []  # deprecated — plotly_spec is inside visualizations
 
             final_payload = {
                 "message": "Agentic analysis completed successfully",
@@ -521,7 +561,7 @@ async def agentic_analysis_stream(request: AskRequest):
                 "signal_ranking_structured": state.get("signal_ranking_structured", {}),
 
                 "visualizations": state.get("visualizations", []),
-                "chart_paths": normalized_chart_paths,
+                "chart_paths": [],
                 "visualization_summary": state.get("visualization_summary", ""),
 
                 "ml_readiness_output": state.get("ml_readiness_output", ""),
@@ -560,7 +600,7 @@ async def preload_models():
     try:
         print("[Startup] AutoInsight backend starting...")
         print(f"[Startup] Ollama model configured: {OLLAMA_MODEL}")
-        print("[Startup] Agent graph compiled and ready.")
+
         if ENABLE_FINETUNED_REFINEMENT:
             print("[Startup] Fine-tuned refinement is ENABLED. Preloading model...")
             load_finetuned_model()
