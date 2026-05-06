@@ -5,6 +5,7 @@ import {
   uploadCsv,
   runAgenticAnalysisStream,
   getStaticUrl,
+  queryDataset,
 } from "./api/autoInsightApi";
 import "./App.css";
 
@@ -54,6 +55,12 @@ function App() {
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [progressSteps, setProgressSteps] = useState([]);
+
+  // Natural language query state
+  const [nlqQuestion, setNlqQuestion] = useState("");
+  const [nlqResult, setNlqResult] = useState(null);
+  const [nlqLoading, setNlqLoading] = useState(false);
+  const [nlqError, setNlqError] = useState("");
 
   const summaryStats = useMemo(() => {
     if (!csvResult?.summary_text) return [];
@@ -198,6 +205,34 @@ function App() {
       setIsStreaming(false);
       setLoading(false);
       setLoadingText("Processing...");
+    }
+  };
+
+  const handleNlqQuery = async () => {
+    if (!nlqQuestion.trim()) return;
+    if (!csvResult?.file_path) {
+      setNlqError("Please upload a CSV file first.");
+      return;
+    }
+
+    try {
+      setNlqError("");
+      setNlqResult(null);
+      setNlqLoading(true);
+
+      const result = await queryDataset({
+        file_path: csvResult.file_path,
+        question: nlqQuestion.trim(),
+        summary_text: csvResult.summary_text || "",
+      });
+
+      setNlqResult(result);
+    } catch (err) {
+      setNlqError(
+        err?.response?.data?.detail || "Query failed. Try rephrasing your question."
+      );
+    } finally {
+      setNlqLoading(false);
     }
   };
 
@@ -479,6 +514,67 @@ function App() {
                 <PlotlyGallery visualizations={analysisResult.visualizations} />
               </section>
             )}
+
+            <section className="section-card">
+              <div className="section-header">
+                <div>
+                  <p className="section-eyebrow">Ask Your Data</p>
+                  <h2 className="section-title">Natural Language Query</h2>
+                </div>
+              </div>
+
+              <p className="action-subtitle" style={{ marginBottom: "16px" }}>
+                Ask questions about your dataset in plain English. The AI converts them to pandas queries and runs them instantly.
+              </p>
+
+              <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
+                <input
+                  type="text"
+                  className="nlq-input"
+                  placeholder='e.g. "show rows where Profit is negative" or "average Sales by Category"'
+                  value={nlqQuestion}
+                  onChange={(e) => setNlqQuestion(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && !nlqLoading && handleNlqQuery()}
+                  disabled={nlqLoading}
+                  style={{ flex: 1, padding: "10px 14px", borderRadius: "8px", border: "0.5px solid var(--color-border-secondary, #ccc)", fontSize: "14px", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}
+                />
+                <button
+                  className="btn btn-primary"
+                  onClick={handleNlqQuery}
+                  disabled={nlqLoading || !nlqQuestion.trim()}
+                >
+                  {nlqLoading ? "Running..." : "Ask"}
+                </button>
+              </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "16px" }}>
+                {[
+                  "Show first 10 rows",
+                  "Show rows where any value is missing",
+                  "Summary statistics for all numeric columns",
+                  "Top 10 rows by highest value in first numeric column",
+                ].map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    className="btn btn-ghost"
+                    style={{ fontSize: "12px", padding: "4px 10px" }}
+                    onClick={() => { setNlqQuestion(suggestion); setNlqResult(null); setNlqError(""); }}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+
+              {nlqError && (
+                <div className="alert alert-error" style={{ marginBottom: "12px" }}>
+                  {nlqError}
+                </div>
+              )}
+
+              {nlqResult && (
+                <NlqResultPanel result={nlqResult} />
+              )}
+            </section>
           </>
         )}
       </main>
@@ -632,6 +728,65 @@ function SafePlot({ viz, fallbackTitle }) {
   }
 
   return <div ref={containerRef} style={{ width: "100%", minHeight: "350px" }} />;
+}
+
+function NlqResultPanel({ result }) {
+  if (!result) return null;
+
+  const { success, question, expression, message, columns, rows, row_count } = result;
+
+  return (
+    <div>
+      {/* Question + generated expression */}
+      <div className="content-box" style={{ marginBottom: "12px", padding: "12px 16px" }}>
+        <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "4px" }}>Question</p>
+        <p style={{ fontSize: "14px", fontWeight: 500, marginBottom: "10px" }}>{question}</p>
+        {expression && (
+          <>
+            <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "4px" }}>Generated pandas expression</p>
+            <code style={{ fontSize: "12px", background: "var(--color-background-secondary)", padding: "6px 10px", borderRadius: "6px", display: "block", overflowX: "auto", whiteSpace: "pre" }}>
+              {expression}
+            </code>
+          </>
+        )}
+        <p style={{ fontSize: "13px", color: success ? "var(--color-text-success, green)" : "var(--color-text-danger, red)", marginTop: "8px" }}>
+          {message}
+        </p>
+      </div>
+
+      {/* Result table */}
+      {success && columns.length > 0 && rows.length > 0 && (
+        <div style={{ overflowX: "auto", borderRadius: "8px", border: "0.5px solid var(--color-border-tertiary)" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+            <thead>
+              <tr style={{ background: "var(--color-background-secondary)" }}>
+                {columns.map((col) => (
+                  <th key={col} style={{ padding: "8px 12px", textAlign: "left", fontWeight: 500, borderBottom: "0.5px solid var(--color-border-tertiary)", whiteSpace: "nowrap" }}>
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)", background: i % 2 === 0 ? "transparent" : "var(--color-background-secondary)" }}>
+                  {columns.map((col) => (
+                    <td key={col} style={{ padding: "7px 12px", whiteSpace: "nowrap", maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {row[col] === null || row[col] === undefined ? (
+                        <span style={{ color: "var(--color-text-tertiary)" }}>—</span>
+                      ) : (
+                        String(row[col])
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PlotlyGallery({ visualizations }) {

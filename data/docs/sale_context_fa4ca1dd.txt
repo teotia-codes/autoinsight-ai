@@ -1,0 +1,5 @@
+Revenue = total sales amount.
+Discount = percentage discount applied to order.
+Profit = revenue minus cost.
+High discount above 30% may reduce profitability.
+Focus on customer segment and regional performance when analyzing sales.

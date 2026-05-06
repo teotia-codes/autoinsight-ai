@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 
 from backend.models import AskRequest
+from pydantic import BaseModel
+from typing import Optional
 from backend.utils import save_upload_file, get_csv_summary, generate_dataset_profile
 from backend.config import OLLAMA_MODEL
 from backend.rag.ingest import ingest_document_to_chroma
@@ -595,6 +597,133 @@ async def agentic_analysis_stream(request: AskRequest):
 # ============================================================
 # Startup
 # ============================================================
+# ============================================================
+# Natural Language Dataset Query
+# ============================================================
+class NLQueryRequest(BaseModel):
+    file_path: str
+    question: str
+    summary_text: Optional[str] = None
+
+
+@app.post("/query-dataset")
+async def query_dataset(request: NLQueryRequest):
+    """
+    Convert a plain-English question into a pandas query,
+    execute it on the uploaded CSV, and return the result as a table.
+    """
+    try:
+        import pandas as pd
+        from backend.data.preprocessing import safe_read_csv
+        from backend.services.ollama_service import query_ollama
+
+        if not request.file_path or not request.question.strip():
+            raise HTTPException(status_code=400, detail="file_path and question are required.")
+
+        df = safe_read_csv(request.file_path)
+        columns = df.columns.tolist()
+        dtypes = {col: str(df[col].dtype) for col in columns}
+        shape = df.shape
+
+        # Give the LLM a tight schema + examples so it returns only code
+        prompt = f"""You are a pandas expert. Convert the user question into a single pandas expression.
+
+DATASET INFO:
+- Shape: {shape[0]} rows x {shape[1]} columns
+- Columns and dtypes: {dtypes}
+- Summary: {request.summary_text or "N/A"}
+
+USER QUESTION: {request.question}
+
+RULES:
+1. The dataframe variable is always called `df`.
+2. Return ONLY a single Python expression — no imports, no assignments, no explanations.
+3. The expression must evaluate to a DataFrame or Series.
+4. For filtering: df[df["Column"] > value]
+5. For aggregation: df.groupby("Column")["Value"].mean().reset_index()
+6. For sorting: df.sort_values("Column", ascending=False).head(10)
+7. Use exact column names from the list above.
+8. If the question cannot be answered with a pandas expression, return exactly: CANNOT_ANSWER
+
+Expression:"""
+
+        raw = query_ollama(prompt).strip()
+
+        # Strip markdown code fences if the LLM wrapped it
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            raw = "\n".join(
+                l for l in lines
+                if not l.strip().startswith("```")
+            ).strip()
+
+        if raw == "CANNOT_ANSWER" or not raw:
+            return {
+                "success": False,
+                "question": request.question,
+                "expression": None,
+                "message": "This question could not be converted to a dataset query. Try rephrasing it.",
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+            }
+
+        # Execute safely — only read operations allowed
+        BLOCKED = ["to_csv", "to_excel", "to_sql", "open(", "os.", "sys.",
+                   "import ", "exec(", "eval(", "__", "write", "delete", "drop"]
+        if any(b in raw for b in BLOCKED):
+            raise HTTPException(status_code=400, detail="Query contains unsafe operations.")
+
+        local_vars = {"df": df, "pd": pd}
+        result = eval(raw, {"__builtins__": {}}, local_vars)  # noqa: S307
+
+        # Normalise result to DataFrame
+        if isinstance(result, pd.Series):
+            result = result.reset_index()
+            result.columns = [str(c) for c in result.columns]
+        elif isinstance(result, pd.DataFrame):
+            result = result.reset_index(drop=True)
+        else:
+            # Scalar result (e.g. .mean(), .sum())
+            return {
+                "success": True,
+                "question": request.question,
+                "expression": raw,
+                "message": f"Result: {result}",
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+            }
+
+        # Cap at 200 rows for the response
+        result = result.head(200)
+
+        # Convert to JSON-safe records
+        result_safe = result.copy()
+        for col in result_safe.columns:
+            if pd.api.types.is_datetime64_any_dtype(result_safe[col]):
+                result_safe[col] = result_safe[col].astype(str)
+        result_safe = result_safe.where(result_safe.notna(), other=None)
+        records = result_safe.to_dict(orient="records")
+        records = make_json_safe(records)
+
+        return {
+            "success": True,
+            "question": request.question,
+            "expression": raw,
+            "message": f"Showing {len(records)} row(s).",
+            "columns": result_safe.columns.tolist(),
+            "rows": records,
+            "row_count": len(records),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("QUERY DATASET ERROR:\n", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
 @app.on_event("startup")
 async def preload_models():
     try:

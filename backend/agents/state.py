@@ -1,4 +1,4 @@
-from typing import TypedDict, Dict, Any, List
+from typing import TypedDict, Dict, Any, List, Optional
 
 
 class AgentState(TypedDict):
@@ -14,6 +14,10 @@ class AgentState(TypedDict):
     # Tool analysis
     tool_analysis_result: Dict[str, Any]
     tool_analysis_text: str
+
+    # ── NEW: records which branch the router chose ──────────────
+    route_taken: str   # "eda_only" | "full" | "ml_heavy"
+    # ────────────────────────────────────────────────────────────
 
     # Target Validation Agent
     target_validation_output: str
@@ -39,6 +43,10 @@ class AgentState(TypedDict):
     # ML Readiness Agent
     ml_readiness_output: str
     ml_readiness_structured: Dict[str, Any]
+
+    # Signal Ranking (explicit field — was missing from original state)
+    signal_ranking_output: str
+    signal_ranking_structured: Dict[str, Any]
 
     # Verifier + Final
     verifier_output: str

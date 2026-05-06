@@ -37,7 +37,6 @@ def get_context_for_state(state: AgentState, query: str, k: int = 3) -> str:
             return retrieve_relevant_context(query=query, k=k, persist_directory=context_dir)
         return retrieve_relevant_context(query=query, k=k)
     except TypeError:
-        # Backward compatibility if retrieve_relevant_context doesn't yet accept persist_directory
         return retrieve_relevant_context(query=query, k=k)
     except Exception as e:
         print(f"[get_context_for_state] Context retrieval failed: {e}")
@@ -105,6 +104,96 @@ def tool_analysis_node(state: AgentState) -> AgentState:
 
     state["tool_analysis_result"] = analysis_result
     state["tool_analysis_text"] = analysis_text
+    return state
+
+
+# ============================================================
+# ROUTER — called by LangGraph after tool_analysis_node
+# ============================================================
+def route_after_analysis(state: AgentState) -> str:
+    """
+    Inspect the tool_analysis_result and decide which pipeline branch
+    this dataset should follow.
+
+    Returns one of three string keys that map to edges in graph.py:
+      "eda_only"  — small dataset or no detectable target
+                    → skip signal_ranking and ml_readiness (EDA report only)
+      "full"      — normal dataset with a clear target
+                    → run all nodes in standard order
+      "ml_heavy"  — large, numeric-rich dataset with a confident target
+                    → standard nodes + SHAP-level signal explanation (future)
+
+    Decision logic uses only real keys from run_real_data_analysis():
+      analysis_result["shape"]["rows"]
+      analysis_result["column_types"]["continuous_numeric"]   (list)
+      analysis_result["target_analysis"]["target_column"]     (str | None)
+      analysis_result["target_analysis"]["confidence"]        ("high"|"medium"|"low")
+    """
+    result = state.get("tool_analysis_result", {})
+
+    rows = result.get("shape", {}).get("rows", 0)
+    target_col = result.get("target_analysis", {}).get("target_column")
+    confidence = result.get("target_analysis", {}).get("confidence", "low")
+    num_continuous = len(
+        result.get("column_types", {}).get("continuous_numeric", [])
+    )
+
+    # ── Branch A: EDA only ───────────────────────────────────────
+    # Conditions: no target found  OR  dataset is too small to be meaningful
+    # for signal ranking / ML readiness checks.
+    if not target_col or rows < 100:
+        route = "eda_only"
+
+    # ── Branch C: ML-heavy ──────────────────────────────────────
+    # Conditions: large dataset + many continuous features + high-confidence target.
+    # This branch is structurally identical to "full" for now but is wired
+    # separately so a SHAP node can be injected here in the next upgrade
+    # without touching the "full" path.
+    elif rows >= 5000 and num_continuous >= 5 and confidence == "high":
+        route = "ml_heavy"
+
+    # ── Branch B: Full ──────────────────────────────────────────
+    else:
+        route = "full"
+
+    # Persist the route into state so the final report can mention it
+    # (e.g. "Signal ranking was skipped: dataset had fewer than 100 rows.")
+    state["route_taken"] = route
+    print(f"[route_after_analysis] rows={rows}, target={target_col}, "
+          f"confidence={confidence}, continuous_cols={num_continuous} → route='{route}'")
+
+    return route
+
+
+# ============================================================
+# Skipped-node stubs (used on the eda_only path)
+# ============================================================
+def signal_ranking_skipped_node(state: AgentState) -> AgentState:
+    """
+    Placeholder written to state when signal_ranking is skipped.
+    Keeps downstream nodes safe — they always find these keys in state.
+    """
+    state["signal_ranking_output"] = (
+        "Signal ranking was skipped: dataset had fewer than 100 rows "
+        "or no detectable target column."
+    )
+    state["signal_ranking_structured"] = {"available": False, "reason": "skipped by router"}
+    return state
+
+
+def ml_readiness_skipped_node(state: AgentState) -> AgentState:
+    """
+    Placeholder written to state when ml_readiness is skipped.
+    """
+    state["ml_readiness_output"] = (
+        "ML readiness assessment was skipped: dataset is too small "
+        "or has no identifiable target column."
+    )
+    state["ml_readiness_structured"] = {
+        "is_ml_ready": False,
+        "readiness_label": "Skipped",
+        "reason": "skipped by router",
+    }
     return state
 
 
@@ -210,8 +299,6 @@ def signal_ranking_node(state: AgentState) -> AgentState:
 # ============================================================
 def visualization_tool_node(state: AgentState) -> AgentState:
     analysis_result = state.get("tool_analysis_result", {})
-
-    # NEW: request-specific chart directory support
     output_dir = state.get("chart_output_dir")
 
     try:
@@ -221,7 +308,6 @@ def visualization_tool_node(state: AgentState) -> AgentState:
             output_dir=output_dir
         )
     except TypeError:
-        # backward compatibility if your current function doesn't yet support output_dir
         visualizations = generate_recommended_visualizations(
             file_path=state["file_path"],
             analysis_result=analysis_result
@@ -239,7 +325,7 @@ def visualization_tool_node(state: AgentState) -> AgentState:
         summary_lines.append("- No suitable visualizations generated.")
 
     state["visualizations"] = visualizations
-    state["chart_paths"] = []          # no longer used — plotly_spec is in visualizations
+    state["chart_paths"] = []
     state["visualization_summary"] = "\n".join(summary_lines)
     return state
 
@@ -261,6 +347,13 @@ def ml_readiness_node(state: AgentState) -> AgentState:
 # 9. Verifier Node
 # ============================================================
 def verifier_node(state: AgentState) -> AgentState:
+    route = state.get("route_taken", "full")
+    route_note = {
+        "eda_only": "\nNOTE: Signal ranking and ML readiness were SKIPPED for this dataset (too small or no target).\n",
+        "ml_heavy": "\nNOTE: This dataset was routed through the ML-heavy path (large, numeric-rich, high-confidence target).\n",
+        "full":     "",
+    }.get(route, "")
+
     prompt = f"""
 You are a strict senior data analyst and QA reviewer.
 
@@ -271,7 +364,7 @@ You must:
 3. Distinguish between exploratory signals and true model-based signal ranking.
 4. Highlight any suspicious visualization choices.
 5. Avoid repeating the entire report. Focus on critique, caveats, and validation notes only.
-
+{route_note}
 ANALYSIS PRIORITIES:
 {state.get("planner_output", "")}
 
@@ -346,7 +439,7 @@ Return a concise, evidence-grounded verification report in markdown.
 
 
 # ============================================================
-# 10. Final Report Node (DRAFT REPORT ONLY)
+# 10. Final Report Node
 # ============================================================
 def final_report_node(state: AgentState) -> AgentState:
     target = state.get("target_validation_structured", {})
@@ -355,6 +448,7 @@ def final_report_node(state: AgentState) -> AgentState:
     sr = state.get("signal_ranking_structured", {})
     mlr = state.get("ml_readiness_structured", {})
     visualizations = state.get("visualizations", [])
+    route = state.get("route_taken", "full")
 
     top_signals = sr.get("top_signals", [])[:5] if sr else []
     top_signal_lines = "\n".join(
@@ -364,6 +458,12 @@ def final_report_node(state: AgentState) -> AgentState:
     viz_lines = "\n".join(
         [f"- {v.get('title', 'Untitled')}: {v.get('interpretation', 'No interpretation')}" for v in visualizations[:5]]
     ) if visualizations else "- No visualizations generated"
+
+    route_context = {
+        "eda_only":  "NOTE: This was an EDA-only analysis. Signal ranking and ML readiness were skipped because the dataset had fewer than 100 rows or no identifiable target column.",
+        "ml_heavy":  "NOTE: This dataset was routed through the ML-heavy path (≥5000 rows, ≥5 continuous features, high-confidence target).",
+        "full":      "",
+    }.get(route, "")
 
     base_prompt = f"""
 You are a senior data analyst writing a polished executive analytics report.
@@ -387,6 +487,8 @@ Use this exact structure:
 ## Risks / Cautions
 ## Actionable Recommendations
 ## Conclusion
+
+{route_context}
 
 DATASET:
 - Filename: {state.get("filename", "N/A")}
